@@ -1,0 +1,10 @@
+name = "savont"
+repository = "https://github.com/bluenote-1577/savont"
+version = "0.8.0"
+commit = "5a5a1ce9053a867abc09e991f61b8ec7fb4fc6ef"
+captured = "2026-10-16"
+
+[semantics]
+quality_encoding = "Phred+33 bytes"
+dna_encoding = "A=0,C=1,G=2,T/U=3; other bytes=0"
+positions = "0-based, matching Rust outputs"

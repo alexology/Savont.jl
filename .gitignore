@@ -1,0 +1,7 @@
+Manifest.toml
+# Pinned upstream checkout; provenance is recorded in UPSTREAM.toml.
+reference/
+# Rust oracle build output.
+oracle/rust_primitives/target/
+*.cov
+*.mem
