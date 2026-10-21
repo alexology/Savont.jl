@@ -25,6 +25,8 @@ Base.@kwdef struct SavontConfig
     primary_clustering_threshold::Float64 = 0.95
     sampling_rate::Int = 11
     pooled_samples::Bool = false
+    # Reproduce upstream bugs listed in docs/deviations.md (for oracle comparisons).
+    upstream_quirks::Bool = false
 end
 
 function validate(config::SavontConfig)
@@ -34,7 +36,7 @@ function validate(config::SavontConfig)
     config.min_cluster_size > 0 || throw(ArgumentError("min_cluster_size must be positive"))
     isodd(config.kmer_size) && 0 < config.kmer_size < 24 || throw(ArgumentError("kmer_size must be odd and smaller than 24"))
     config.kmer_size + config.blockmer_length <= 31 || throw(ArgumentError("kmer_size + blockmer_length must be at most 31"))
-    config.sampling_rate > 0 || throw(ArgumentError("sampling_rate must be positive"))
+    0 < config.sampling_rate <= config.kmer_size || throw(ArgumentError("sampling_rate must be in 1:kmer_size"))
     0.0 <= config.primary_clustering_threshold <= 1.0 || throw(ArgumentError("primary_clustering_threshold must be in [0, 1]"))
     return config
 end

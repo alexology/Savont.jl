@@ -2,9 +2,12 @@
 //! Source commit: 5a5a1ce9053a867abc09e991f61b8ec7fb4fc6ef.
 //!
 //! The upstream modules are compiled unchanged; this file only drives them and
-//! prints tab-separated records for test/rust_oracle.jl.
+//! prints tab-separated records for test/rust_oracle.jl. Driver code copied from
+//! main.rs (which cannot be included) is marked as such.
 #![allow(dead_code, unused_imports, unused_variables, unused_mut)]
 
+#[path = "../../../reference/savont/src/asv_cluster.rs"]
+mod asv_cluster;
 #[path = "../../../reference/savont/src/cli.rs"]
 mod cli;
 #[path = "../../../reference/savont/src/constants.rs"]
@@ -168,14 +171,90 @@ fn markers(args: &[String]) {
     }
 }
 
+fn optional_csv<T: ToString>(values: &[Option<T>]) -> String {
+    values
+        .iter()
+        .map(|x| x.as_ref().map_or("-".to_string(), T::to_string))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// `cluster <savont asv arguments>`: twin reads (stage 1.5) and primary k-mer
+/// clustering (stage 2).
+fn cluster(args: &[String]) {
+    let mut argv = vec!["savont-asv".to_string()];
+    argv.extend_from_slice(args);
+    let cluster_args = cli::ClusterArgs::parse_from(argv);
+    let k = cluster_args.kmer_size;
+    let l = cluster_args.blockmer_length;
+
+    // As main.rs::get_kmers_and_snpmers.
+    let (big_snpmer_map, big_blockmer_map) =
+        seq_parse::read_to_split_kmers(k, l, cluster_args.threads, &cluster_args);
+    let mut blockmer_info = if cluster_args.use_blockmers {
+        kmer_comp::get_blockmers_inplace_sort(big_blockmer_map, &big_snpmer_map, k, l, &cluster_args)
+    } else {
+        types::BlockmerGlobalInfo::default()
+    };
+    let mut kmer_info = kmer_comp::get_snpmers_inplace_sort(big_snpmer_map, k, &cluster_args);
+
+    // As main.rs::get_twin_reads_from_kmer_info.
+    let mut twin_reads =
+        kmer_comp::twin_reads_from_snpmers(&mut kmer_info, &mut blockmer_info, &cluster_args);
+    twin_reads.sort_by(|a, b| {
+        b.est_id
+            .unwrap_or(100.0)
+            .partial_cmp(&a.est_id.unwrap_or(100.0))
+            .unwrap()
+    });
+    let without = twin_reads.iter().filter(|tr| tr.snpmers_vec().is_empty()).count();
+    let fraction_without = without as f64 / twin_reads.len() as f64;
+    println!("low_polymorphism\t{}", u8::from(fraction_without > 0.75));
+
+    for (index, read) in twin_reads.iter().enumerate() {
+        let qualities = read
+            .qual_seq
+            .as_ref()
+            .map_or("-".to_string(), |q| csv(&q.iter().map(|x| x as u8).collect::<Vec<_>>()));
+        let est_id = read.est_id.map_or("-".to_string(), |x| format!("{x:?}"));
+        let minimizer_kmers = read.minimizer_kmers.iter().map(|x| x.to_u64()).collect::<Vec<_>>();
+        let snpmer_kmers = read.snpmer_kmers.iter().map(|x| x.to_u64()).collect::<Vec<_>>();
+        let canonical = read.blockmer_canonical.iter().map(|&x| u8::from(x)).collect::<Vec<_>>();
+        println!(
+            "read\t{index}\t{}\t{}\t{}\t{}\t{est_id}\t{}\t{qualities}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            read.id,
+            read.base_id,
+            read.file_idx,
+            read.base_length,
+            read.dna_seq,
+            csv(&read.minimizer_positions),
+            csv(&minimizer_kmers),
+            csv(&read.snpmer_positions),
+            csv(&snpmer_kmers),
+            csv(&read.blockmer_positions),
+            csv(&canonical),
+            optional_csv(&read.lsh_signatures)
+        );
+    }
+
+    let directory = std::env::temp_dir().join(format!("savont-oracle-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let clusters = asv_cluster::cluster_reads_by_kmers(&twin_reads, &cluster_args, &directory);
+    std::fs::remove_dir_all(&directory).unwrap();
+    for members in clusters.iter() {
+        println!("cluster\t{}", csv(members));
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("primitives") => primitives(&args[2..]),
         Some("stats") => stats(),
         Some("markers") => markers(&args[2..]),
+        Some("cluster") => cluster(&args[2..]),
         _ => {
-            eprintln!("usage: savont-upstream-oracle primitives|stats|markers ...");
+            eprintln!("usage: savont-upstream-oracle primitives|stats|markers|cluster ...");
             std::process::exit(2);
         }
     }

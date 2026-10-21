@@ -146,4 +146,22 @@ end
     @test quirk_positions[end-5:end] == fixed_positions[end-5:end]
 end
 
+@testset "syncmers along the whole read" begin
+    no_markers = Set{UInt64}()
+    syncmers(sequence; quirks=false) = begin
+        read = twin_read(sequence, nothing, "read", SavontConfig(upstream_quirks=quirks), no_markers, no_markers)
+        Dict(Int(p) => kmer for (p, kmer) in zip(read.minimizer_positions, read.minimizer_kmers))
+    end
+    # A syncmer depends only on the k-mer sequence: trimming the read start only
+    # shifts the syncmers of the remaining sequence.
+    for record in read_records(joinpath(@__DIR__, "data", "amplicons_sample1.fastq.gz"))[1:30], shift in (1, 3, 8)
+        full = syncmers(record.sequence); trimmed = syncmers(record.sequence[shift + 1:end])
+        @test trimmed == Dict(p - shift => kmer for (p, kmer) in full if p >= shift)
+    end
+    sequence = read_records(joinpath(@__DIR__, "data", "amplicons_sample1.fastq.gz"))[1].sequence
+    @test minimum(keys(syncmers(sequence; quirks=true))) >= 10  # upstream: k - s = 10
+    @test syncmers(sequence) != syncmers(sequence; quirks=true)
+    @test twin_read(sequence[1:16], nothing, "short", SavontConfig(), no_markers, no_markers) === nothing
+end
+
 include("rust_oracle.jl")

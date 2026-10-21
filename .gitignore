@@ -1,6 +1,6 @@
 Manifest.toml
 # Pinned upstream checkout; provenance is recorded in UPSTREAM.toml.
-reference/
+/reference/
 # Rust oracle build output.
 oracle/*/target/
 *.cov

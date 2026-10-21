@@ -1,0 +1,3 @@
+# Test inputs and oracle outputs must keep their exact bytes.
+test/data/** -text
+test/reference/** -text

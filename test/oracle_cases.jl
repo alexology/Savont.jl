@@ -28,3 +28,16 @@ primitive_command(oracle, input, p) =
 marker_command(oracle, arguments) =
     `$oracle markers $(joinpath.(DATA_DIRECTORY, AMPLICON_INPUTS)) --threads 2 $arguments`
 stats_command(oracle) = `$oracle stats`
+
+# Twin reads and primary clustering: (name, upstream arguments, SavontConfig keywords).
+# Julia runs with upstream_quirks=true so that upstream bugs are reproduced.
+const CLUSTER_RUNS = [
+    ("default", String[], (;)),
+    ("blockmers_k13", ["--use-blockmers", "--kmer-size", "13"], (; use_blockmers=true, kmer_size=13)),
+    ("strict_threshold", ["--primary-clustering-threshold", "0.985", "--min-cluster-size", "3"],
+     (; primary_clustering_threshold=0.985, min_cluster_size=3)),
+    ("single_strand_c7", ["--single-strand", "-c", "7"], (; single_strand=true, sampling_rate=7)),
+]
+cluster_reference_name(name) = "cluster_$(name).tsv.gz"
+cluster_command(oracle, arguments) =
+    `$oracle cluster $(joinpath.(DATA_DIRECTORY, AMPLICON_INPUTS)) --threads 2 $arguments`

@@ -38,3 +38,43 @@ version. `upstream_quirks=true` reproduces upstream exactly and is used for the
 oracle comparison. Expected effect when those stages are implemented: fuzzy
 export merging and similar-consensus removal also catch 5'-trimmed sequences, so
 results can contain fewer near-duplicate ASVs than upstream.
+
+## D2. Syncmers at the start of each read (2026-10-21)
+
+**Upstream behavior.** `seeding::get_twin_read_syncmer` selects open syncmers
+from a rolling window of `k - s + 1` canonical s-mer hashes (`s = k - c + 1`, 7
+with the defaults `k = 17, c = 11`). Its initialization loop adds only the first
+`s - 1` bases to the rolling s-mer, and the main loop then continues from base
+`k - 1`, skipping bases `s - 1` to `k - 2`. Consequently:
+
+1. no hash is computed for the s-mers inside the first k-mer, so the k-mers
+   starting at positions `0` to `k - s - 1` (0–9 with the defaults) are never
+   examined and can never be selected;
+2. the next `s - 1` hashes are computed from non-contiguous bases, so the
+   k-mers starting at positions `k - s` to `k - 2` are judged on wrong hashes.
+
+The syncmer property of a k-mer depends only on its sequence; these choices
+depend on its position in the read, so they are an initialization error rather
+than a design choice.
+
+**Consequence.** Read starts vary because of primer trimming and indels. On 100
+simulated 1,300 bp reads (`k = 17, c = 11`), removing the first 3 bases changed
+the syncmers of the remaining sequence beyond the 3-base shift in 76/100 reads
+with upstream behavior and in 0/100 with the correction; the earliest syncmer was
+at position 10 or later in every read with upstream behavior (median 12) and at
+median position 2 with the correction. Syncmers feed primary clustering (shared
+minimizers and the LSH bucket signatures), so reads of the same ASV that start at
+different positions share fewer markers than they should. On the test data the
+primary clusters are identical in both modes.
+
+**Savont.jl.** The rolling s-mer is filled with every base before the first
+k-mer, so every k-mer of the read is examined. `SavontConfig(upstream_quirks=true)`
+reproduces upstream exactly and is used for the oracle comparison.
+
+## Upstream behavior kept on purpose
+
+- **High-frequency filtering of syncmers and SNPmers** (`kmer_comp::twin_reads_from_snpmers`)
+  removes entries from `minimizer_positions` and `snpmer_positions` only; the
+  lines that would filter `minimizer_kmers` and `snpmer_kmers` are commented out
+  upstream, so primary clustering and the LSH signatures still use every
+  syncmer. This looks deliberate and is reproduced (see `TwinRead`).

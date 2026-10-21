@@ -73,6 +73,39 @@ function compare_markers(text, config)
     config.use_blockmers && @test !isempty(expected_blockmers)
 end
 
+optional_list(T, text) = text == "-" ? nothing : parse_list(T, text)
+
+function compare_clusters(text, config)
+    rows = oracle_rows(text)
+    paths = joinpath.(DATA_DIRECTORY, AMPLICON_INPUTS)
+    info, blockmers = discover_markers(paths, config)
+    reads, low_polymorphism = build_twin_reads(paths, info, blockmers, config)
+    expected_reads = [fields[2:end] for fields in rows if fields[1] == "read"]
+    @test length(reads) == length(expected_reads)
+    @test low_polymorphism == (only(only(f[2:end] for f in rows if f[1] == "low_polymorphism")) == "1")
+    for (read, f) in zip(reads, expected_reads)
+        @test (read.id, read.base_id, read.file_index - 1, read.base_length) ==
+              (f[2], f[3], parse(Int, f[4]), parse(Int, f[5]))
+        if f[6] == "-"
+            @test read.estimated_identity === nothing
+        else
+            @test read.estimated_identity ≈ parse(Float64, f[6]) rtol = 1e-13
+        end
+        @test read.sequence == codeunits(f[7])
+        @test read.binned_qualities == optional_list(UInt8, f[8])
+        @test read.minimizer_positions == parse_list(UInt32, f[9])
+        @test read.minimizer_kmers == parse_list(UInt64, f[10])
+        @test read.snpmer_positions == parse_list(UInt32, f[11])
+        @test read.snpmer_kmers == parse_list(UInt64, f[12])
+        @test read.blockmer_positions == parse_list(UInt32, f[13])
+        @test read.blockmer_canonical == (parse_list(UInt8, f[14]) .== 1)
+        @test read.lsh_signatures == [x == "-" ? nothing : parse(UInt64, x) for x in split(f[15], ',')]
+    end
+    expected_clusters = [parse_list(Int, fields[2]) .+ 1 for fields in rows if fields[1] == "cluster"]
+    @test cluster_reads_by_kmers(reads, config) == expected_clusters
+    @test !isempty(expected_clusters)
+end
+
 function compare_stats(text)
     binomial_cases = 0; fisher_cases = 0
     for fields in oracle_rows(text)
@@ -96,6 +129,10 @@ source = haskey(ENV, "SAVONT_RUST_ORACLE") ? "live oracle" : "stored oracle outp
         compare_primitives(oracle_text(o -> primitive_command(o, input, p), primitive_reference_name(input, p)), records, p)
     end
     @testset "statistics" compare_stats(oracle_text(stats_command, STATS_REFERENCE))
+    @testset "twin reads and clusters $name" for (name, arguments, keywords) in CLUSTER_RUNS
+        config = SavontConfig(; upstream_quirks=true, keywords...)
+        compare_clusters(oracle_text(o -> cluster_command(o, arguments), cluster_reference_name(name)), config)
+    end
     @testset "markers $name" for (name, arguments, keywords) in MARKER_RUNS
         config = SavontConfig(; keywords...)
         compare_markers(oracle_text(o -> marker_command(o, arguments), marker_reference_name(name)), config)
