@@ -1,0 +1,29 @@
+[package]
+name = "savont-upstream-oracle"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Compiles the pinned upstream modules (reference/savont/src) verbatim through
+# #[path] includes. minimap2 and spoars are not needed by these modules and are
+# omitted, so the oracle builds on Windows. Cargo.lock is copied from upstream.
+
+[dependencies]
+needletail = { version = "0.6.3", features = ["bzip2", "flate2"], default-features = false }
+log = "0"
+rayon = "1"
+smallvec = { version = "1", features = ["union", "serde", "write"] }
+serde = { version = "1", features = ["derive"] }
+clap = { version = "4.4", features = ["derive"] }
+spmc = "0.3"
+fishers_exact = "1.0"
+fxhash = "0"
+bio-seq = { version = "0.14", features = ["serde"] }
+bio-seq-derive = "=4.11.0"
+memory-stats = "1.2.0"
+fastbloom = "0.11.0"
+crossbeam-channel = "0.5.13"
+statrs = "0.16"
+
+[profile.release]
+debug = false

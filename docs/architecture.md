@@ -21,6 +21,8 @@ Code drafted before this architecture review remains outside the standalone repo
 
 The complete active Rust source, Cargo metadata, changelog, README and tests were inspected. The upstream Rust test suite was not executed because `cargo` is not installed on the current workstation; establishing a reproducible Rust oracle is consequently the first validation action after architecture review. The bioRxiv page for the preprint returned HTTP 403, so no claim below relies on inaccessible supplementary text. These are evidence gaps, not assumed passes.
 
+Update (2026-10-21): a Rust toolchain is now available. `oracle/rust_upstream` compiles the upstream `seeding`, `seq_parse`, `kmer_comp`, `types`, `utils`, `cli` and `constants` modules unchanged and is the oracle for Phases 3A and 3B. The upstream test suite itself has still not been run, because the full crate links minimap2, which fails to build on Windows.
+
 ## Active upstream boundary
 
 `src/lib.rs` exports the active modules `kmer_comp`, `seeding`, `types`, `cli`, `constants`, `seq_parse`, `alignment`, `asv_cluster`, `chimera`, `classify`, `databases`, `download`, `merge`, `sintax`, `taxonomy`, and `utils`.

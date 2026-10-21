@@ -34,8 +34,17 @@ function homopolymer_compress(sequence::AbstractVector{UInt8}, do_hpc::Bool=true
     return compressed, lengths
 end
 
+"""
+    homopolymer_decompress(sequence, lengths)
+
+Expand a homopolymer-compressed sequence. As upstream, a length mismatch logs a
+warning and returns a copy of `sequence` unchanged.
+"""
 function homopolymer_decompress(sequence::AbstractVector{UInt8}, lengths::AbstractVector{UInt8})
-    length(sequence) == length(lengths) || return collect(sequence)
+    if length(sequence) != length(lengths)
+        @warn "HPC sequence and lengths mismatch: $(length(sequence)) vs $(length(lengths))"
+        return collect(sequence)
+    end
     result = UInt8[]
     sizehint!(result, sum(Int, lengths))
     for (base, run) in zip(sequence, lengths)
@@ -44,6 +53,13 @@ function homopolymer_decompress(sequence::AbstractVector{UInt8}, lengths::Abstra
     return result
 end
 
+"""
+    homopolymer_compress_with_quality(sequence, qualities, do_hpc=true)
+
+Homopolymer compression keeping the minimum quality of each run (runs capped at
+255). As upstream, an empty sequence or a quality vector of different length
+returns three empty vectors.
+"""
 function homopolymer_compress_with_quality(sequence::AbstractVector{UInt8}, qualities::AbstractVector{UInt8}, do_hpc::Bool=true)
     isempty(sequence) || length(sequence) != length(qualities) ? (return UInt8[], UInt8[], UInt8[]) : nothing
     do_hpc || return (collect(sequence), collect(qualities), fill(UInt8(1), length(sequence)))

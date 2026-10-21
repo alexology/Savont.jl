@@ -3,6 +3,14 @@ struct Blockmer
     is_forward::Bool
 end
 
+"""
+    encode_base(base::UInt8) -> UInt64
+
+Two-bit code of upstream's `BYTE_TO_SEQ` table: `A=0, C=1, G=2, T/U=3` (either
+case), bytes `0x01`–`0x03` map to themselves and every other byte, including `N`
+and IUPAC codes, maps to `0` (`A`). Kept for parity: ambiguous bases are not
+rejected, so k-mers containing them are encoded as if they contained `A`.
+"""
 @inline function encode_base(base::UInt8)::UInt64
     base == 0x01 && return 0x01
     base == 0x02 && return 0x02
@@ -87,7 +95,30 @@ function fmh_seeds_positions(sequence::AbstractVector{UInt8}, c::Integer, k::Int
 end
 
 @inline _last_minimum_index(values) = findlast(==(minimum(values)), values)
-function minimizer_seeds_positions(sequence::AbstractVector{UInt8}, w::Integer, k::Integer)
+"""
+    minimizer_seeds_positions(sequence, w, k; upstream_quirks=false) -> (values, positions)
+
+Window minimizers over windows of `w` consecutive canonical k-mers. Each time the
+window minimum changes, the `mm_hash64` value of the minimum canonical k-mer and
+its 0-based start position are appended. Every value is the hash of the canonical
+k-mer at the reported position.
+
+Upstream `seeding::minimizer_seeds_positions` (called with `w = 28, k = 31` in
+`merge.rs`) differs in the first window, and `upstream_quirks=true` reproduces it
+exactly (verified against the compiled upstream code by `test/rust_oracle.jl`):
+
+- the first element of `values` is the last canonical k-mer of the first window,
+  not a hash, paired with the position of the first window's minimum;
+- the forward k-mers of the first window are not masked to `2k` bits, so every
+  first-window k-mer after the first carries the preceding bases in its high bits;
+  the canonical choice and hashes of the first window therefore differ from those
+  of the same k-mers in later windows.
+
+These are upstream bugs (deviation D1 in `docs/deviations.md`): Savont.jl uses the
+corrected version, and `upstream_quirks=true` exists for the oracle comparison.
+"""
+function minimizer_seeds_positions(sequence::AbstractVector{UInt8}, w::Integer, k::Integer;
+                                   upstream_quirks::Bool=false)
     w > 0 || throw(ArgumentError("w must be positive")); length(sequence) < k + w - 1 && return (UInt64[], UInt64[])
     mask, reverse_mask, reverse_shift = _parameters(k)
     forward = UInt64(0); reverse = UInt64(0); canonical = UInt64(0)
@@ -95,6 +126,7 @@ function minimizer_seeds_positions(sequence::AbstractVector{UInt8}, w::Integer, 
     @inbounds for i in 1:(k + w - 1)
         nucleotide = encode_base(sequence[i]); complement = UInt64(3) - nucleotide
         forward = (forward << 2) | nucleotide
+        upstream_quirks || (forward &= mask)
         reverse = (reverse >> 2) | (complement << reverse_shift)
         if i >= k
             canonical = min(forward, reverse)
@@ -102,7 +134,7 @@ function minimizer_seeds_positions(sequence::AbstractVector{UInt8}, w::Integer, 
         end
     end
     minimum_slot = _last_minimum_index(window); minimum_value = window[minimum_slot]
-    kmers = UInt64[canonical] # Preserve upstream's first-window behavior.
+    kmers = UInt64[upstream_quirks ? canonical : minimum_value]
     positions = UInt64[minimum_slot - 1]
     @inbounds for i in (k + w):length(sequence)
         nucleotide = encode_base(sequence[i]); complement = UInt64(3) - nucleotide
