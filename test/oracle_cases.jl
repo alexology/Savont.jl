@@ -29,15 +29,26 @@ marker_command(oracle, arguments) =
     `$oracle markers $(joinpath.(DATA_DIRECTORY, AMPLICON_INPUTS)) --threads 2 $arguments`
 stats_command(oracle) = `$oracle stats`
 
-# Twin reads and primary clustering: (name, upstream arguments, SavontConfig keywords).
-# Julia runs with upstream_quirks=true so that upstream bugs are reproduced.
+# Twin reads, primary and polymorphic-marker clustering: (name, inputs, upstream
+# arguments, SavontConfig keywords). Blockmers need k + l in upstream's list of
+# supported sizes.
+const NOISY_1 = ["noisy_1pct.fastq.gz"]
+const NOISY_2 = ["noisy_2pct.fastq.gz"]
 const CLUSTER_RUNS = [
-    ("default", String[], (;)),
-    ("blockmers_k13", ["--use-blockmers", "--kmer-size", "13"], (; use_blockmers=true, kmer_size=13)),
-    ("strict_threshold", ["--primary-clustering-threshold", "0.985", "--min-cluster-size", "3"],
+    ("default", AMPLICON_INPUTS, String[], (;)),
+    ("blockmers", AMPLICON_INPUTS, ["--use-blockmers"], (; use_blockmers=true)),
+    ("k13", AMPLICON_INPUTS, ["--kmer-size", "13"], (; kmer_size=13)),
+    ("strict_threshold", AMPLICON_INPUTS, ["--primary-clustering-threshold", "0.985", "--min-cluster-size", "3"],
      (; primary_clustering_threshold=0.985, min_cluster_size=3)),
-    ("single_strand_c7", ["--single-strand", "-c", "7"], (; single_strand=true, sampling_rate=7)),
+    ("single_strand_c7", AMPLICON_INPUTS, ["--single-strand", "-c", "7"], (; single_strand=true, sampling_rate=7)),
+    ("low_polymorphism", AMPLICON_INPUTS, ["--low-polymorphism"], (; low_polymorphism=true)),
+    ("noisy1", NOISY_1, ["--min-read-length", "1000"], (; min_read_length=1000)),
+    ("noisy1_blockmers", NOISY_1, ["--min-read-length", "1000", "--use-blockmers"], (; min_read_length=1000, use_blockmers=true)),
+    ("noisy2", NOISY_2, ["--min-read-length", "1000"], (; min_read_length=1000)),
+    ("noisy2_blockmers", NOISY_2, ["--min-read-length", "1000", "--use-blockmers"], (; min_read_length=1000, use_blockmers=true)),
+    ("noisy2_one_iteration", NOISY_2, ["--min-read-length", "1000", "--max-iterations-recluster", "1"],
+     (; min_read_length=1000, max_iterations_recluster=1)),
 ]
 cluster_reference_name(name) = "cluster_$(name).tsv.gz"
-cluster_command(oracle, arguments) =
-    `$oracle cluster $(joinpath.(DATA_DIRECTORY, AMPLICON_INPUTS)) --threads 2 $arguments`
+cluster_command(oracle, inputs, arguments) =
+    `$oracle cluster $(joinpath.(DATA_DIRECTORY, inputs)) --threads 2 $arguments`

@@ -75,9 +75,9 @@ end
 
 optional_list(T, text) = text == "-" ? nothing : parse_list(T, text)
 
-function compare_clusters(text, config)
+function compare_clusters(text, inputs, config)
     rows = oracle_rows(text)
-    paths = joinpath.(DATA_DIRECTORY, AMPLICON_INPUTS)
+    paths = joinpath.(DATA_DIRECTORY, inputs)
     info, blockmers = discover_markers(paths, config)
     reads, low_polymorphism = build_twin_reads(paths, info, blockmers, config)
     expected_reads = [fields[2:end] for fields in rows if fields[1] == "read"]
@@ -102,8 +102,20 @@ function compare_clusters(text, config)
         @test read.lsh_signatures == [x == "-" ? nothing : parse(UInt64, x) for x in split(f[15], ',')]
     end
     expected_clusters = [parse_list(Int, fields[2]) .+ 1 for fields in rows if fields[1] == "cluster"]
-    @test cluster_reads_by_kmers(reads, config) == expected_clusters
+    clusters = cluster_reads_by_kmers(reads, config)
+    @test clusters == expected_clusters
     @test !isempty(expected_clusters)
+    low = config.low_polymorphism || low_polymorphism
+    if !low
+        expected_greedy = [Vector{Int}[] for _ in clusters]
+        for fields in rows
+            fields[1] == "greedy" && push!(expected_greedy[parse(Int, fields[2]) + 1], parse_list(Int, fields[3]) .+ 1)
+        end
+        @test greedy_snpmer_clusters(reads, clusters, config) == expected_greedy
+    end
+    expected_final = [parse_list(Int, fields[2]) .+ 1 for fields in rows if fields[1] == "final"]
+    @test cluster_reads_by_snpmers(reads, clusters, config; low_polymorphism=low) == expected_final
+    @test !isempty(expected_final)
 end
 
 function compare_stats(text)
@@ -129,9 +141,9 @@ source = haskey(ENV, "SAVONT_RUST_ORACLE") ? "live oracle" : "stored oracle outp
         compare_primitives(oracle_text(o -> primitive_command(o, input, p), primitive_reference_name(input, p)), records, p)
     end
     @testset "statistics" compare_stats(oracle_text(stats_command, STATS_REFERENCE))
-    @testset "twin reads and clusters $name" for (name, arguments, keywords) in CLUSTER_RUNS
+    @testset "twin reads and clusters $name" for (name, inputs, arguments, keywords) in CLUSTER_RUNS
         config = SavontConfig(; upstream_quirks=true, keywords...)
-        compare_clusters(oracle_text(o -> cluster_command(o, arguments), cluster_reference_name(name)), config)
+        compare_clusters(oracle_text(o -> cluster_command(o, inputs, arguments), cluster_reference_name(name)), inputs, config)
     end
     @testset "markers $name" for (name, arguments, keywords) in MARKER_RUNS
         config = SavontConfig(; keywords...)

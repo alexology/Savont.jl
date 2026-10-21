@@ -179,12 +179,12 @@ fn optional_csv<T: ToString>(values: &[Option<T>]) -> String {
         .join(",")
 }
 
-/// `cluster <savont asv arguments>`: twin reads (stage 1.5) and primary k-mer
-/// clustering (stage 2).
+/// `cluster <savont asv arguments>`: twin reads (stage 1.5), primary k-mer
+/// clustering (stage 2) and polymorphic-marker clustering (stage 3).
 fn cluster(args: &[String]) {
     let mut argv = vec!["savont-asv".to_string()];
     argv.extend_from_slice(args);
-    let cluster_args = cli::ClusterArgs::parse_from(argv);
+    let mut cluster_args = cli::ClusterArgs::parse_from(argv);
     let k = cluster_args.kmer_size;
     let l = cluster_args.blockmer_length;
 
@@ -210,6 +210,10 @@ fn cluster(args: &[String]) {
     let without = twin_reads.iter().filter(|tr| tr.snpmers_vec().is_empty()).count();
     let fraction_without = without as f64 / twin_reads.len() as f64;
     println!("low_polymorphism\t{}", u8::from(fraction_without > 0.75));
+    // As main.rs: auto-enable low-polymorphism mode.
+    if fraction_without > 0.75 && !cluster_args.low_polymorphism {
+        cluster_args.low_polymorphism = true;
+    }
 
     for (index, read) in twin_reads.iter().enumerate() {
         let qualities = read
@@ -240,9 +244,22 @@ fn cluster(args: &[String]) {
     let directory = std::env::temp_dir().join(format!("savont-oracle-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let clusters = asv_cluster::cluster_reads_by_kmers(&twin_reads, &cluster_args, &directory);
-    std::fs::remove_dir_all(&directory).unwrap();
     for members in clusters.iter() {
         println!("cluster\t{}", csv(members));
+    }
+    let final_clusters =
+        asv_cluster::cluster_reads_by_snpmers(&twin_reads, &clusters, &cluster_args, &directory);
+    // Greedy SNPmer clusters before reclustering, as written by upstream.
+    let greedy = directory.join("snpmer_clusters_before_reclust2.5.tsv");
+    if let Ok(text) = std::fs::read_to_string(&greedy) {
+        for line in text.lines().skip(1) {
+            let fields = line.split('\t').collect::<Vec<_>>();
+            println!("greedy\t{}\t{}", fields[0], fields[4]);
+        }
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
+    for members in final_clusters.iter() {
+        println!("final\t{}", csv(members));
     }
 }
 

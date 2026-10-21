@@ -27,8 +27,8 @@ function main()
     for (name, arguments, _) in MARKER_RUNS
         store(marker_command(oracle, arguments), marker_reference_name(name))
     end
-    for (name, arguments, _) in CLUSTER_RUNS
-        store(cluster_command(oracle, arguments), cluster_reference_name(name))
+    for (name, inputs, arguments, _) in CLUSTER_RUNS
+        store(cluster_command(oracle, inputs, arguments), cluster_reference_name(name))
     end
 end
 

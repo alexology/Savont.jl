@@ -110,6 +110,24 @@ function primitive_records(path, rng, count)
     close(fasta)
 end
 
+# Closely related haplotypes (1, 2 and 7 SNPs from the first) with a higher error
+# rate, so that greedy SNPmer clusters need merging and reassignment.
+function noisy_reads(path, rng, substitution)
+    base = [DNA[randint(rng, 4)] for _ in 1:1200]
+    haplotypes = [base, mutate(rng, base, [300]), mutate(rng, base, [500, 900]), mutate(rng, base, 200:150:1100)]
+    open(path, "w") do raw
+        io = GzipCompressorStream(raw)
+        number = 0
+        for (haplotype, abundance) in zip(haplotypes, (220, 60, 25, 14)), _ in 1:abundance
+            number += 1
+            sequence, qualities = sequence_read(rng, haplotype; substitution, deletion=0.003, insertion=0.003)
+            uniform(rng) < 0.5 && (sequence = revcomp(sequence); reverse!(qualities))
+            write_fastq(io, "n$number", sequence, qualities)
+        end
+        close(io)
+    end
+end
+
 function main()
     directory = joinpath(@__DIR__, "..", "test", "data")
     mkpath(directory)
@@ -124,6 +142,8 @@ function main()
     amplicon_reads(joinpath(directory, "amplicons_sample1.fastq.gz"), rng, haplotypes, (70, 35, 15, 25, 4), 1)
     amplicon_reads(joinpath(directory, "amplicons_sample2.fastq.gz"), rng, haplotypes, (40, 40, 10, 20, 0), 2)
     primitive_records(joinpath(directory, "primitives.fastq"), rng, 60)
+    noisy_reads(joinpath(directory, "noisy_1pct.fastq.gz"), SplitMix64(0x0bad5eed), 0.01)
+    noisy_reads(joinpath(directory, "noisy_2pct.fastq.gz"), SplitMix64(0x0bad5eed), 0.02)
 end
 
 main()

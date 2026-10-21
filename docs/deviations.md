@@ -65,13 +65,27 @@ at position 10 or later in every read with upstream behavior (median 12) and at
 median position 2 with the correction. Syncmers feed primary clustering (shared
 minimizers and the LSH bucket signatures), so reads of the same ASV that start at
 different positions share fewer markers than they should. On the test data the
-primary clusters are identical in both modes.
+final clusters are identical in both modes in 7 of 11 configurations; the others
+(stricter primary threshold, `c = 7`, simulated reads with 2% substitutions)
+differ by a few reads per cluster or by one extra small cluster, with no
+systematic gain or loss in cluster purity against the simulated haplotypes.
 
 **Savont.jl.** The rolling s-mer is filled with every base before the first
 k-mer, so every k-mer of the read is examined. `SavontConfig(upstream_quirks=true)`
 reproduces upstream exactly and is used for the oracle comparison.
 
 ## Upstream behavior kept on purpose
+
+- **Reads without SNPmers are discarded in stage 3** unless low-polymorphism mode
+  is on (set by the user or automatically when more than 75% of the reads lack
+  SNPmers): in the greedy SNPmer pass such a read matches no representative, starts
+  a singleton cluster and is removed by `min_cluster_size`. On the test data an
+  unrelated amplicon (45 reads, no SNPmers) is lost entirely. Upstream warns when
+  more than 10% of the reads lack SNPmers and its low-polymorphism comment states
+  that SNPmer-less reads are otherwise discarded, so this is a known design
+  limitation rather than a coding error.
+- **Reclustering stops when a round makes no merge**, although the upstream
+  comment mentions reassignments too.
 
 - **High-frequency filtering of syncmers and SNPmers** (`kmer_comp::twin_reads_from_snpmers`)
   removes entries from `minimizer_positions` and `snpmer_positions` only; the
