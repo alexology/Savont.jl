@@ -128,6 +128,28 @@ function noisy_reads(path, rng, substitution)
     end
 end
 
+# Reads of one haplotype for partial order alignment. Every `every`-th read moves
+# `shift` bases from near the start to near the end (length unchanged), so the
+# banded alignment misses the optimum and differs from the exact one.
+function poa_reads(path, rng, reads, len, substitution; shift=0, every=0)
+    haplotype = [DNA[randint(rng, 4)] for _ in 1:len]
+    open(path, "w") do raw
+        io = GzipCompressorStream(raw)
+        for r in 1:reads
+            template = haplotype[randint(rng, 8):(len - randint(rng, 8) + 1)]
+            if every > 0 && r % every == 0
+                a = 150 + randint(rng, 50)
+                template = vcat(haplotype[1:a], haplotype[(a + shift + 1):(end - 200)],
+                                [DNA[randint(rng, 4)] for _ in 1:shift], haplotype[(end - 199):end])
+            end
+            sequence, qualities = sequence_read(rng, template; substitution,
+                                                deletion=substitution / 2, insertion=substitution / 2)
+            write_fastq(io, "r$r", sequence, qualities)
+        end
+        close(io)
+    end
+end
+
 function main()
     directory = joinpath(@__DIR__, "..", "test", "data")
     mkpath(directory)
@@ -144,6 +166,9 @@ function main()
     primitive_records(joinpath(directory, "primitives.fastq"), rng, 60)
     noisy_reads(joinpath(directory, "noisy_1pct.fastq.gz"), SplitMix64(0x0bad5eed), 0.01)
     noisy_reads(joinpath(directory, "noisy_2pct.fastq.gz"), SplitMix64(0x0bad5eed), 0.02)
+    poa_reads(joinpath(directory, "poa_plain.fastq.gz"), SplitMix64(0x9a0001), 76, 1300, 0.01)
+    poa_reads(joinpath(directory, "poa_shifted.fastq.gz"), SplitMix64(0x9a0002), 40, 1300, 0.01; shift=250, every=3)
+    poa_reads(joinpath(directory, "poa_shifted_short.fastq.gz"), SplitMix64(0x9a0003), 60, 900, 0.01; shift=120, every=2)
 end
 
 main()

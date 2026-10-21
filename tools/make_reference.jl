@@ -27,6 +27,9 @@ function main()
     for (name, arguments, _) in MARKER_RUNS
         store(marker_command(oracle, arguments), marker_reference_name(name))
     end
+    for (input, mode, isa) in POA_RUNS
+        store(poa_command(oracle, input, mode, isa), poa_reference_name(input, mode, isa))
+    end
     for (name, inputs, arguments, _) in CLUSTER_RUNS
         store(cluster_command(oracle, inputs, arguments), cluster_reference_name(name))
     end

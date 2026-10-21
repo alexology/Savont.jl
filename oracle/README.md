@@ -1,11 +1,11 @@
 # Upstream oracle
 
 `rust_upstream` compiles the pinned savont 0.8.0 modules (`cli`, `constants`,
-`utils`, `types`, `seeding`, `seq_parse`, `kmer_comp`) unchanged, through
+`utils`, `types`, `seeding`, `seq_parse`, `kmer_comp`, `asv_cluster`, `alignment`)
+unchanged, with minimap2 2.30 (crate 0.1.31) and spoars 0.1.3 as pinned upstream, through
 `#[path]` includes of `reference/savont/src`, and prints their outputs as
 tab-separated records. Only `databases` is replaced by a stub holding the download
-keywords that `cli.rs` needs. minimap2 and spoars are not linked, so the oracle
-builds on Windows.
+keywords that `cli.rs` needs.
 
 ## Build
 
@@ -16,7 +16,18 @@ builds on Windows.
    git -C reference/savont checkout 5a5a1ce9053a867abc09e991f61b8ec7fb4fc6ef
    ```
 
-2. Build from `oracle/rust_upstream`:
+2. Fetch the crates and patch the minimap2 wrapper (its index-path handling uses a
+   Unix-only API; alignment code is untouched):
+
+   ```sh
+   (cd oracle/rust_upstream && cargo fetch)
+   sh oracle/vendor_minimap2.sh
+   ```
+
+   On Windows, `oracle/rust_upstream/.cargo/config.toml` links the zlib of
+   MinGW (Strawberry Perl).
+
+3. Build from `oracle/rust_upstream`:
 
    ```sh
    cargo build --release
@@ -25,7 +36,7 @@ builds on Windows.
    Without the MSVC linker on Windows, use the GNU toolchain:
    `cargo +stable-x86_64-pc-windows-gnu build --release`. Add `--offline` when
    the crates are already cached. `Cargo.lock` resolves the upstream dependency
-   ranges to the cached versions (statrs 0.16.1, fishers_exact 1.0.1).
+   ranges to statrs 0.16.1, fishers_exact 1.0.1, minimap2 0.1.31 and spoars 0.1.3.
 
 ## Use
 
@@ -47,4 +58,9 @@ Commands:
 - `stats`: binomial tail and Fisher exact p-values on a fixed grid;
 - `markers <savont asv arguments>`: `read_to_split_kmers`,
   `get_blockmers_inplace_sort` and `get_snpmers_inplace_sort`. Blockmers are
-  sorted before printing because upstream collects them in thread order.
+  sorted before printing because upstream collects them in thread order;
+- `cluster <savont asv arguments>`: retained reads, primary clusters, greedy
+  SNPmer clusters and final stage-3 clusters;
+- `poa <fastq> <band|noband>`: spoars alignment of every record to the growing
+  graph with savont's settings, and the consensus. `SPOARS_FORCE_ISA=sse41`
+  selects 128-bit vectors.

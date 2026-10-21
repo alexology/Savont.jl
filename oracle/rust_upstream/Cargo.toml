@@ -5,8 +5,8 @@ edition = "2021"
 publish = false
 
 # Compiles the pinned upstream modules (reference/savont/src) verbatim through
-# #[path] includes. minimap2 and spoars are not needed by these modules and are
-# omitted, so the oracle builds on Windows. Cargo.lock is copied from upstream.
+# #[path] includes. Cargo.lock resolves upstream's dependency ranges to the
+# versions in upstream's own lock where it matters (minimap2, spoars).
 
 [dependencies]
 needletail = { version = "0.6.3", features = ["bzip2", "flate2"], default-features = false }
@@ -24,6 +24,14 @@ memory-stats = "1.2.0"
 fastbloom = "0.11.0"
 crossbeam-channel = "0.5.13"
 statrs = "0.16"
+# Stage 4 (alignment.rs). minimap2 is patched by ../vendor_minimap2.sh; the
+# `static` feature of minimap2-sys is needed for the Windows link.
+minimap2 = "=0.1.31"
+minimap2-sys = { version = "=0.1.30", features = ["static"] }
+spoars = "=0.1.3"
+
+[patch.crates-io]
+minimap2 = { path = "vendor/minimap2" }
 
 [profile.release]
 debug = false

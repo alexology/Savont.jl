@@ -6,6 +6,8 @@
 //! main.rs (which cannot be included) is marked as such.
 #![allow(dead_code, unused_imports, unused_variables, unused_mut)]
 
+#[path = "../../../reference/savont/src/alignment.rs"]
+mod alignment;
 #[path = "../../../reference/savont/src/asv_cluster.rs"]
 mod asv_cluster;
 #[path = "../../../reference/savont/src/cli.rs"]
@@ -171,6 +173,44 @@ fn markers(args: &[String]) {
     }
 }
 
+/// `poa <fastq> <band|noband>`: spoars partial order alignment with savont's
+/// settings (alignment.rs::generate_consensus_poa): every record is aligned to the
+/// growing graph and added with its raw quality bytes as weights.
+fn poa(args: &[String]) {
+    use spoars::align::{AlignmentEngine, AlignmentType, BandConfig, Scoring, SimdEngine};
+    use spoars::graph::Graph;
+    let mut reader = needletail::parse_fastx_file(&args[0]).expect("valid path");
+    let mut sequences = Vec::new();
+    let mut qualities = Vec::new();
+    while let Some(record) = reader.next() {
+        let record = record.expect("valid record");
+        sequences.push(record.seq().to_vec());
+        qualities.push(record.qual().expect("FASTQ input").to_vec());
+    }
+    let scoring = Scoring::new(3, -8, -6, -6, 0, 0).unwrap();
+    // As generate_consensus_poa: band base = maximum deviation from the mean length.
+    let ref_len = sequences.iter().map(|s| s.len()).sum::<usize>() / sequences.len();
+    let max_deviation = sequences
+        .iter()
+        .map(|s| (ref_len as isize - s.len() as isize).abs() as u32)
+        .max()
+        .unwrap_or(0);
+    let mut engine = if args[1] == "noband" {
+        SimdEngine::new(AlignmentType::Overlap, scoring)
+    } else {
+        SimdEngine::banded(AlignmentType::Overlap, scoring, BandConfig { base: max_deviation, frac: 0.1 })
+    };
+    let mut graph = Graph::new();
+    for (index, sequence) in sequences.iter().enumerate() {
+        let weights: Vec<u32> = qualities[index].iter().map(|&q| q as u32).collect();
+        let (alignment, score) = engine.align(sequence, &graph);
+        let pairs = alignment.iter().map(|(n, s)| format!("{n}:{s}")).collect::<Vec<_>>();
+        println!("alignment\t{}\t{score}\t{}", index + 1, pairs.join(","));
+        graph.add_alignment(&alignment, sequence, &weights).expect("add_alignment failed");
+    }
+    println!("consensus\t{}", graph.generate_consensus());
+}
+
 fn optional_csv<T: ToString>(values: &[Option<T>]) -> String {
     values
         .iter()
@@ -270,8 +310,9 @@ fn main() {
         Some("stats") => stats(),
         Some("markers") => markers(&args[2..]),
         Some("cluster") => cluster(&args[2..]),
+        Some("poa") => poa(&args[2..]),
         _ => {
-            eprintln!("usage: savont-upstream-oracle primitives|stats|markers|cluster ...");
+            eprintln!("usage: savont-upstream-oracle primitives|stats|markers|cluster|poa ...");
             std::process::exit(2);
         }
     }

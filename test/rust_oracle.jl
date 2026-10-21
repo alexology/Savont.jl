@@ -118,6 +118,26 @@ function compare_clusters(text, inputs, config)
     @test !isempty(expected_final)
 end
 
+function compare_poa(text, input, mode, isa)
+    rows = oracle_rows(text)
+    records = read_records(joinpath(DATA_DIRECTORY, input))
+    sequences = [record.sequence for record in records]
+    # As upstream generate_consensus_poa: band base = maximum deviation from the mean length.
+    mean_length = sum(length, sequences) ÷ length(sequences)
+    deviation = maximum(abs(mean_length - length(sequence)) for sequence in sequences)
+    band = mode == "noband" ? nothing : POABand(deviation, 0.1f0)
+    graph = POAGraph(); scoring = POAScoring(3, -8, -6)
+    for (index, record) in enumerate(records)
+        alignment, score = poa_align(graph, record.sequence, scoring; band, isa)
+        expected = rows[index]
+        @test (expected[1], parse(Int, expected[2])) == ("alignment", index)
+        @test score == parse(Int, expected[3])
+        @test join(["$(node - 1):$(position - 1)" for (node, position) in alignment], ",") == expected[4]
+        poa_add!(graph, alignment, record.sequence, record.qualities)
+    end
+    @test String(poa_consensus(graph)) == only(fields[2] for fields in rows if fields[1] == "consensus")
+end
+
 function compare_stats(text)
     binomial_cases = 0; fisher_cases = 0
     for fields in oracle_rows(text)
@@ -139,6 +159,9 @@ source = haskey(ENV, "SAVONT_RUST_ORACLE") ? "live oracle" : "stored oracle outp
     @testset "primitives $input $(p)" for input in PRIMITIVE_INPUTS, p in PRIMITIVE_PARAMETERS
         records = read_records(joinpath(DATA_DIRECTORY, input))
         compare_primitives(oracle_text(o -> primitive_command(o, input, p), primitive_reference_name(input, p)), records, p)
+    end
+    @testset "partial order alignment $input $mode $isa" for (input, mode, isa) in POA_RUNS
+        compare_poa(oracle_text(o -> poa_command(o, input, mode, isa), poa_reference_name(input, mode, isa)), input, mode, isa)
     end
     @testset "statistics" compare_stats(oracle_text(stats_command, STATS_REFERENCE))
     @testset "twin reads and clusters $name" for (name, inputs, arguments, keywords) in CLUSTER_RUNS

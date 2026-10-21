@@ -1,0 +1,4 @@
+# minimap2-sys needs zlib; on Windows (GNU toolchain) link the one shipped with
+# Strawberry Perl / MinGW, followed by the C runtime it depends on.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-lz", "-C", "link-arg=-lmsvcrt", "-C", "link-arg=-lkernel32"]

@@ -74,16 +74,41 @@ systematic gain or loss in cluster purity against the simulated haplotypes.
 k-mer, so every k-mer of the read is examined. `SavontConfig(upstream_quirks=true)`
 reproduces upstream exactly and is used for the oracle comparison.
 
+## D3. Low-polymorphism primary clusters (2026-10-21, methodological change)
+
+This is not an upstream coding error but a change of method requested by the
+user.
+
+**Upstream behavior.** In stage 3, a read without SNPmers matches no
+representative in the greedy SNPmer pass, starts a singleton cluster and is
+removed by `min_cluster_size`. Upstream avoids this only through its
+low-polymorphism mode, enabled by the user or automatically when more than 75%
+of all reads lack SNPmers, which then skips stage 3 for every cluster. An
+amplicon without SNPmers in a sample whose other amplicons are polymorphic is
+therefore discarded entirely: on the test data, an unrelated amplicon of 45
+reads disappears. In metabarcoding this can affect, for example, a species
+represented by a single haplotype and without close relatives in the sample.
+
+**Savont.jl.** The 75% rule is applied to each primary cluster: a primary
+cluster in which more than 75% of the reads have no SNPmer skips stage 3 and is
+kept whole (if it has at least `min_cluster_size` reads), as the whole data set
+is in low-polymorphism mode. Keeping only the SNPmer-less reads together inside
+polymorphic primary clusters was not chosen: there they are mostly reads whose
+SNP sites had low quality, so they would form a cluster mixing several
+haplotypes and a mixed consensus. `SavontConfig(upstream_quirks=true)`
+restores the upstream behavior. On the test data the 45-read amplicon is kept
+and the other clusters are unchanged.
+
 ## Upstream behavior kept on purpose
 
-- **Reads without SNPmers are discarded in stage 3** unless low-polymorphism mode
-  is on (set by the user or automatically when more than 75% of the reads lack
-  SNPmers): in the greedy SNPmer pass such a read matches no representative, starts
-  a singleton cluster and is removed by `min_cluster_size`. On the test data an
-  unrelated amplicon (45 reads, no SNPmers) is lost entirely. Upstream warns when
-  more than 10% of the reads lack SNPmers and its low-polymorphism comment states
-  that SNPmer-less reads are otherwise discarded, so this is a known design
-  limitation rather than a coding error.
+- **Reads without SNPmers inside polymorphic primary clusters** are still
+  discarded in stage 3, as upstream (see D3).
+- **Banded partial order alignment depends on the vector width.** spoars, used by
+  upstream for the initial consensus, computes banded rows in segments of 16 or 8
+  columns (AVX2, 16- or 32-bit scores) or 8 or 4 (SSE4.1, NEON), so the same
+  reads can give a different consensus on different CPUs when the optimal
+  alignment leaves the band. `poa_align` reproduces both (`isa = :avx2`, the
+  default, or `:sse41`).
 - **Reclustering stops when a round makes no merge**, although the upstream
   comment mentions reassignments too.
 

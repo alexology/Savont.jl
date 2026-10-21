@@ -12,6 +12,7 @@ include("markers.jl")
 include("twin_reads.jl")
 include("clustering.jl")
 include("marker_clustering.jl")
+include("poa.jl")
 
 export SavontConfig, apply_preset, validate
 export ReadRecord, read_records, foreach_record
@@ -25,5 +26,6 @@ export KmerCount, SnpmerInfo, BlockmerInfo, KmerGlobalInfo, snpmer_kmers
 export count_split_kmers, find_snpmers, find_blockmers, discover_markers
 export TwinRead, twin_read, lsh_signatures, build_twin_reads, cluster_reads_by_kmers
 export snpmer_markers, blockmer_markers, ConsensusMarker, greedy_snpmer_clusters, cluster_reads_by_snpmers
+export POAScoring, POABand, POAGraph, poa_add!, poa_align, poa_consensus
 
 end

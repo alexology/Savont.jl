@@ -52,3 +52,11 @@ const CLUSTER_RUNS = [
 cluster_reference_name(name) = "cluster_$(name).tsv.gz"
 cluster_command(oracle, inputs, arguments) =
     `$oracle cluster $(joinpath.(DATA_DIRECTORY, inputs)) --threads 2 $arguments`
+
+# Partial order alignment with savont's settings: (input, "band" or "noband", isa).
+# `isa = :sse41` sets SPOARS_FORCE_ISA so that spoars uses 128-bit vectors.
+const POA_RUNS = [(input, mode, isa) for input in ["poa_plain.fastq.gz", "poa_shifted.fastq.gz", "poa_shifted_short.fastq.gz"]
+                  for (mode, isa) in (("noband", :avx2), ("band", :avx2), ("band", :sse41))]
+poa_reference_name(input, mode, isa) = "$(first(split(input, '.')))_$(mode)_$(isa).tsv.gz"
+poa_command(oracle, input, mode, isa) =
+    addenv(`$oracle poa $(joinpath(DATA_DIRECTORY, input)) $mode`, "SPOARS_FORCE_ISA" => (isa === :sse41 ? "sse41" : ""))

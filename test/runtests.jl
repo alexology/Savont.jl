@@ -164,4 +164,22 @@ end
     @test twin_read(sequence[1:16], nothing, "short", SavontConfig(), no_markers, no_markers) === nothing
 end
 
+@testset "low-polymorphism primary clusters (D3)" begin
+    paths = joinpath.(@__DIR__, "data", ["amplicons_sample1.fastq.gz", "amplicons_sample2.fastq.gz"])
+    final_sizes = map((true, false)) do quirks
+        config = SavontConfig(upstream_quirks=quirks)
+        info, blockmers = discover_markers(paths, config)
+        reads, low = @test_logs (:warn, r"without SNPmers") match_mode=:any build_twin_reads(paths, info, blockmers, config)
+        @test !low
+        clusters = cluster_reads_by_kmers(reads, config)
+        final = cluster_reads_by_snpmers(reads, clusters, config)
+        # The unrelated amplicon has no SNPmers and forms the 45-read primary cluster.
+        unrelated = only(filter(c -> all(i -> isempty(reads[i].snpmer_positions), c), clusters))
+        @test length(unrelated) == 45
+        @test (unrelated in final) == !quirks
+        length.(final)
+    end
+    @test final_sizes == ([112, 75, 25], [112, 75, 45, 25])
+end
+
 include("rust_oracle.jl")

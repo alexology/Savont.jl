@@ -293,8 +293,12 @@ Polymorphic-marker clustering within each primary cluster (upstream stage 3).
    markers are SNPmers, or blockmers when `use_blockmers`.
 
 With `low_polymorphism` the primary clusters are returned unchanged (sizes at least
-`min_cluster_size`). Clusters are sorted vectors of 1-based read indices, ordered by
-decreasing size and then by first member.
+`min_cluster_size`). Otherwise, unless `config.upstream_quirks`, the same applies to
+each primary cluster in which more than 75% of the reads have no SNPmer: upstream
+applies this rule only to the whole data set, so a low-polymorphism amplicon among
+polymorphic ones would be discarded (deviation D3 in `docs/deviations.md`).
+Clusters are sorted vectors of 1-based read indices, ordered by decreasing size and
+then by first member.
 """
 function cluster_reads_by_snpmers(reads::AbstractVector{TwinRead}, kmer_clusters::AbstractVector{<:AbstractVector{<:Integer}},
                                   config::SavontConfig; low_polymorphism::Bool=config.low_polymorphism)
@@ -303,6 +307,15 @@ function cluster_reads_by_snpmers(reads::AbstractVector{TwinRead}, kmer_clusters
         return sort!(kept; by=_size_order)
     end
     k = config.kmer_size; l = config.blockmer_length; use_blockmers = config.use_blockmers
+    passed = Vector{Vector{Int}}()
+    if !config.upstream_quirks
+        polymorphic = Vector{Vector{Int}}()
+        for cluster in kmer_clusters
+            without = count(i -> isempty(reads[i].snpmer_positions), cluster)
+            push!(without / length(cluster) > 0.75 ? passed : polymorphic, collect(Int, cluster))
+        end
+        kmer_clusters = polymorphic
+    end
     groups = greedy_snpmer_clusters(reads, kmer_clusters, config)
     for _ in 1:config.max_iterations_recluster
         total_merges = 0
@@ -313,6 +326,6 @@ function cluster_reads_by_snpmers(reads::AbstractVector{TwinRead}, kmer_clusters
         end
         total_merges == 0 && break
     end
-    final = sort!([cluster for group in groups for cluster in group]; by=_size_order)
+    final = sort!(vcat([cluster for group in groups for cluster in group], passed); by=_size_order)
     return filter!(cluster -> length(cluster) >= config.min_cluster_size, final)
 end
