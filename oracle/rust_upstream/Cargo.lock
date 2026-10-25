@@ -775,6 +775,7 @@ dependencies = [
  "crossbeam-channel",
  "fastbloom",
  "fishers_exact",
+ "flate2",
  "fxhash",
  "log",
  "memory-stats",

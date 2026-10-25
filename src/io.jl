@@ -79,6 +79,21 @@ function foreach_record(f, paths::AbstractVector{<:AbstractString}; cutadapt_rc:
 end
 foreach_record(f, path::AbstractString; kwargs...) = foreach_record(f, [path]; kwargs...)
 
+# `foreach_record` in batches: `f` gets a vector of up to `batch_size` consecutive
+# records, which is emptied and refilled afterwards (keep the records, not the vector).
+function _foreach_batch(f, paths::AbstractVector{<:AbstractString}; batch_size::Int=8192, cutadapt_rc::Bool=true)
+    batch = ReadRecord[]
+    foreach_record(paths; cutadapt_rc) do record
+        push!(batch, record)
+        if length(batch) == batch_size
+            f(batch)
+            empty!(batch)
+        end
+    end
+    isempty(batch) || f(batch)
+    return nothing
+end
+
 """
     read_records(paths) -> Vector{ReadRecord}
 

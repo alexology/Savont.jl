@@ -1,0 +1,5 @@
+asv_header	depth	species_bootstrap	genus_bootstrap	family_bootstrap	order_bootstrap	class_bootstrap	phylum_bootstrap	superkingdom_bootstrap	species	genus	family	order	class	phylum	superkingdom
+final_asv_0_depth_60-40	100	0.500	0.900	0.950	1.000	1.000	1.000	1.000	UNCLASSIFIED	Bacillus	Bacillaceae	Bacillales	Bacilli	Bacillota	Bacteria
+final_asv_2_depth_12-0	12	0.500	0.900	0.950	1.000	1.000	1.000	1.000	UNCLASSIFIED	Salmonella	Enterobacteriaceae	Enterobacterales	Gammaproteobacteria	Pseudomonadota	Bacteria
+final_asv_4_depth_0-33	33	0.500	0.900	0.950	1.000	1.000	1.000	1.000	UNCLASSIFIED	Pseudomonas	Pseudomonadaceae	Pseudomonadales	Gammaproteobacteria	Pseudomonadota	Bacteria
+final_asv_5_depth_21-21	42	0.500	0.900	0.950	1.000	1.000	1.000	1.000	UNCLASSIFIED	Mycobacterium	Mycobacteriaceae	Mycobacteriales	Actinomycetes	Actinomycetota	Bacteria

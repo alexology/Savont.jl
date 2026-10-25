@@ -14,9 +14,20 @@ function reverse_complement(sequence::AbstractVector{UInt8})
 end
 reverse_complement(sequence::AbstractString) = String(reverse_complement(Vector{UInt8}(codeunits(sequence))))
 
-function homopolymer_compress(sequence::AbstractVector{UInt8}, do_hpc::Bool=true)
+"""
+    homopolymer_compress(sequence, do_hpc=true; upstream_quirks=false) -> (compressed, lengths)
+
+Homopolymer compression with runs capped at 255. Without `do_hpc` the sequence is
+returned unchanged with lengths 1; upstream instead appends a copy of the first
+base (its final-run push also runs in that branch), which `upstream_quirks=true`
+reproduces (deviation D4 in `docs/deviations.md`).
+"""
+function homopolymer_compress(sequence::AbstractVector{UInt8}, do_hpc::Bool=true; upstream_quirks::Bool=false)
     isempty(sequence) && return (UInt8[], UInt8[])
-    do_hpc || return (collect(sequence), fill(UInt8(1), length(sequence)))
+    if !do_hpc
+        upstream_quirks || return (collect(sequence), fill(UInt8(1), length(sequence)))
+        return (push!(collect(sequence), sequence[1]), fill(UInt8(1), length(sequence) + 1))
+    end
     compressed = UInt8[]
     lengths = UInt8[]
     sizehint!(compressed, length(sequence)); sizehint!(lengths, length(sequence))

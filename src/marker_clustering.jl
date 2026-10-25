@@ -12,6 +12,15 @@ function _encode_kmer(sequence::AbstractVector{UInt8}, position::Integer, length
     end
     return kmer
 end
+# The same from a read's 2-bit sequence.
+function _encode_kmer(read::TwinRead, position::Integer, length::Integer)
+    packed = getfield(read, :packed_sequence)
+    kmer = UInt64(0)
+    for i in (position + 1):(position + length)
+        kmer = (kmer << 2) | _packed_code(packed, i)
+    end
+    return kmer
+end
 
 function _reverse_complement_kmer(kmer::UInt64, length::Integer)
     result = UInt64(0)
@@ -32,7 +41,7 @@ when its middle-masked value is smaller, otherwise the forward k-mer.
 function snpmer_markers(read::TwinRead)
     k = Int(read.k); mask = ~(UInt64(3) << (k - 1))
     return map(read.snpmer_positions) do position
-        forward = _encode_kmer(read.sequence, position, k)
+        forward = _encode_kmer(read, position, k)
         reverse = _reverse_complement_kmer(forward, k)
         (position, (reverse & mask) < (forward & mask) ? reverse : forward)
     end
@@ -47,7 +56,7 @@ matched (upstream `TwinRead::blockmers_vec`).
 function blockmer_markers(read::TwinRead)
     length_kl = Int(read.k) + Int(read.l)
     return map(zip(read.blockmer_positions, read.blockmer_canonical)) do (position, forward)
-        kmer = _encode_kmer(read.sequence, position, length_kl)
+        kmer = _encode_kmer(read, position, length_kl)
         (position, forward ? kmer : _reverse_complement_kmer(kmer, length_kl))
     end
 end
@@ -271,7 +280,7 @@ The greedy pass of [`cluster_reads_by_snpmers`](@ref) alone, one vector of clust
 per primary cluster (upstream `snpmer_clusters_before_reclust2.5.tsv`).
 """
 greedy_snpmer_clusters(reads::AbstractVector{TwinRead}, kmer_clusters, config::SavontConfig) =
-    [_greedy_snpmer_clusters(cluster, reads, config) for cluster in kmer_clusters]
+    _tmap(cluster -> _greedy_snpmer_clusters(cluster, reads, config), kmer_clusters)
 
 """
     cluster_reads_by_snpmers(reads, kmer_clusters, config; low_polymorphism=config.low_polymorphism)
@@ -318,13 +327,13 @@ function cluster_reads_by_snpmers(reads::AbstractVector{TwinRead}, kmer_clusters
     end
     groups = greedy_snpmer_clusters(reads, kmer_clusters, config)
     for _ in 1:config.max_iterations_recluster
-        total_merges = 0
-        for (g, group) in enumerate(groups)
+        # Groups (primary clusters) are independent.
+        rounds = _tmap(groups) do group
             merged, merges = _merge_round(group, reads, use_blockmers, k, l)
-            total_merges += merges
-            groups[g] = first(_reassign_round(merged, reads, use_blockmers, k, l, config.min_cluster_size))
+            first(_reassign_round(merged, reads, use_blockmers, k, l, config.min_cluster_size)), merges
         end
-        total_merges == 0 && break
+        groups = first.(rounds)
+        sum(last, rounds; init=0) == 0 && break
     end
     final = sort!(vcat([cluster for group in groups for cluster in group], passed); by=_size_order)
     return filter!(cluster -> length(cluster) >= config.min_cluster_size, final)

@@ -1,11 +1,11 @@
 # Upstream oracle
 
-`rust_upstream` compiles the pinned savont 0.8.0 modules (`cli`, `constants`,
-`utils`, `types`, `seeding`, `seq_parse`, `kmer_comp`, `asv_cluster`, `alignment`)
-unchanged, with minimap2 2.30 (crate 0.1.31) and spoars 0.1.3 as pinned upstream, through
-`#[path]` includes of `reference/savont/src`, and prints their outputs as
-tab-separated records. Only `databases` is replaced by a stub holding the download
-keywords that `cli.rs` needs.
+`rust_upstream` compiles the pinned savont 0.8.0 modules (`chimera`, `cli`, `constants`,
+`utils`, `types`, `seeding`, `seq_parse`, `kmer_comp`, `asv_cluster`, `alignment`,
+`taxonomy`, `databases`, `classify`, `sintax`, `merge`) unchanged, with minimap2 2.30
+(crate 0.1.31) and spoars 0.1.3 as pinned upstream, through `#[path]` includes of
+`reference/savont/src`, and prints their outputs as tab-separated records. Only
+`main.rs` (which cannot be included) and `download.rs` are left out.
 
 ## Build
 
@@ -63,4 +63,37 @@ Commands:
   SNPmer clusters and final stage-3 clusters;
 - `poa <fastq> <band|noband>`: spoars alignment of every record to the growing
   graph with savont's settings, and the consensus. `SPOARS_FORCE_ISA=sse41`
-  selects 128-bit vectors.
+  selects 128-bit vectors;
+- `consensus <savont asv arguments>`: stages 1–3 as `cluster`, then
+  `alignment::align_and_consensus` (minimap2 orientation and spoars POA): one line
+  per initial consensus with cluster index, depth, read indices and sequence;
+- `seedmap <fastx>`: maps every record after the first to the first with
+  minimap2 configured as in `align_and_consensus` (strand, coordinates, mapping
+  quality, CIGAR with soft clips), to check Minimap2.jl in that configuration;
+- `polish <savont asv arguments>`: stages 1–4 as upstream `main.rs` (pileups of
+  the deepest 10% for the quality error rates, then pileup analysis batch by
+  batch and the low-quality partition). Prints the error rates, a per-position
+  pileup summary (`depth:matches:deletions:insertions:quality sum:inserted
+  quality sum:median HP length`) and each polished consensus (low-quality flag,
+  HP lengths, masked sequence, low-quality positions, decompressed sequence);
+- `merge <savont asv arguments>`: stages 1–4, decompression, then
+  `alignment::merge_similar_consensuses` (stage 5); one line per merged
+  consensus with index, depth, read indices and decompressed sequence;
+- `chimera <savont asv arguments>`: stages 1–5, then `chimera::detect_chimeras`
+  and `filter_chimeras` (stage 6): chimera score of every consensus, the
+  detected combinations (sorted) and the remaining consensuses;
+- `em <savont asv arguments>`: stages 1–6, then
+  `alignment::refine_asv_depths_with_em` (stage 7) and the final sort: the ASVs
+  with depth and assignment counts, and the sorted rows of
+  `read_to_asv_mappings.tsv`;
+- `asv <savont asv arguments>`: the whole pipeline as `main.rs::run_cluster`
+  (stage 7b with `--pooled-samples`), printing `final_asvs.fasta`,
+  `feature-table.tsv` and `final_assignments.tsv`, or `stopped` where `main.rs`
+  returns early (`--skip-chimera-detection`). `write_feature_table` is private to
+  `main.rs` and is reproduced in the oracle.
+- `taxonomy <savont classify|sintax|export arguments>`: the subcommand as
+  `main.rs` runs it (thread pool and database loading, without the log file),
+  then every file of its output directory as `<file name>	<line>`, in name order.
+  `test/oracle_cases.jl` copies the database to a temporary directory first,
+  because classify caches its minimap2 index (`<fasta>.mmi`) next to the FASTA, and
+  passes `-t 1` so that sintax ties between references follow database order.

@@ -20,6 +20,17 @@ function main()
     oracle = get(ENV, "SAVONT_RUST_ORACLE", "")
     isempty(oracle) && error("set SAVONT_RUST_ORACLE to the compiled oracle executable")
     mkpath(REFERENCE_DIRECTORY)
+    for (name, input, db, arguments, _) in CLASSIFY_RUNS
+        store(classify_command(oracle, input, db, arguments), classify_reference_name(name))
+    end
+    for (name, input, db, arguments, _) in SINTAX_RUNS
+        store(sintax_command(oracle, input, db, arguments), sintax_reference_name(name))
+    end
+    for (name, inputs, arguments, _) in EXPORT_RUNS
+        store(export_command(oracle, inputs, arguments), export_reference_name(name))
+    end
+    # `julia tools/make_reference.jl taxonomy` stores only the taxonomy cases.
+    "taxonomy" in ARGS && return
     for input in PRIMITIVE_INPUTS, p in PRIMITIVE_PARAMETERS
         store(primitive_command(oracle, input, p), primitive_reference_name(input, p))
     end
@@ -30,8 +41,15 @@ function main()
     for (input, mode, isa) in POA_RUNS
         store(poa_command(oracle, input, mode, isa), poa_reference_name(input, mode, isa))
     end
+    for (name, inputs, arguments, _) in ASV_RUNS
+        store(asv_command(oracle, inputs, arguments), asv_reference_name(name))
+    end
     for (name, inputs, arguments, _) in CLUSTER_RUNS
         store(cluster_command(oracle, inputs, arguments), cluster_reference_name(name))
+        store(consensus_command(oracle, inputs, arguments), consensus_reference_name(name))
+        store(polish_command(oracle, inputs, arguments), polish_reference_name(name))
+        store(merge_command(oracle, inputs, arguments), merge_reference_name(name))
+        store(chimera_command(oracle, inputs, arguments), chimera_reference_name(name))
     end
 end
 

@@ -210,11 +210,23 @@ struct _ExactMatrix
 end
 @inline _cell(m::_ExactMatrix, i, j) = m.h[j + 1, i + 1]
 
+# Striped banded matrix stored linearly (`padded` positions per graph row); only
+# positions lo[c]:hi[c] of matrix column c are initialized, the others read as `neg`
+# as in spoars' fully initialized matrix.
 struct _StripedMatrix{T}
-    h::Matrix{T}            # padded columns × (nodes + 1); row 0 and column 0 are the boundary
+    h::Vector{T}
+    padded::Int
+    lo::Vector{Int}
+    hi::Vector{Int}
     gap::Int
+    neg::Int
 end
-@inline _cell(m::_StripedMatrix, i, j) = i == 0 ? j * m.gap : j == 0 ? 0 : Int(m.h[j, i + 1])
+@inline function _cell(m::_StripedMatrix, i, j)
+    i == 0 && return j * m.gap
+    j == 0 && return 0
+    c = i + 1
+    return m.lo[c] <= j <= m.hi[c] ? Int(m.h[(c - 1) * m.padded + j]) : m.neg
+end
 
 _profile_score(graph, scoring, code, base) = graph.decoder[code + 1] == base ? scoring.match : scoring.mismatch
 
@@ -326,16 +338,65 @@ function _remaining_path(graph::POAGraph, rank_of)
     return r
 end
 
-@inline _sat(::Type{T}, x::Int) where {T} = T(clamp(x, Int(typemin(T)), Int(typemax(T))))
-@inline _adds(a::T, b::T) where {T} = _sat(T, Int(a) + Int(b))
+# Saturating add (SIMD `adds`), branch-free so that the loops vectorize.
+@inline function _adds(a::T, b::T) where {T}
+    s = widen(a) + widen(b)
+    return min(max(s, widen(typemin(T))), widen(typemax(T))) % T
+end
+
+# One step of the in-segment prefix-max ladder: every lane k > shift takes the
+# maximum with lane k - shift plus `penalty` (wrapping add, as the SIMD shift and
+# add); lanes k <= shift see the shifted-in fill value `neg`.
+@inline function _ladder_step(hv::NTuple{L,T}, ::Val{S}, penalty::T, neg::T) where {L,T,S}
+    return ntuple(k -> k > S ? max(hv[k], hv[k - S] + penalty) : max(hv[k], neg), Val(L))
+end
+
+# The whole ladder (shifts 1, 2, 4, ... < L with penalties g, 2g, 4g, ...),
+# unrolled at compile time so that each step becomes fixed lane shuffles.
+@inline function _ladder(hv::NTuple{L,T}, g::T, neg::T) where {L,T}
+    hv = _ladder_step(hv, Val(1), g, neg)
+    L > 2 && (hv = _ladder_step(hv, Val(2), T(2 * Int(g)), neg))
+    L > 4 && (hv = _ladder_step(hv, Val(4), T(4 * Int(g)), neg))
+    L > 8 && (hv = _ladder_step(hv, Val(8), T(8 * Int(g)), neg))
+    return hv
+end
+
+# Make positions a:b of matrix column c valid, writing `neg` where they were not.
+@inline function _extend_column!(h::Vector{T}, lo, hi, c::Int, padded::Int, a::Int, b::Int, neg::T) where {T}
+    base = (c - 1) * padded
+    if lo[c] > hi[c]
+        @inbounds for position in a:b
+            h[base + position] = neg
+        end
+        lo[c] = a; hi[c] = b
+        return
+    end
+    @inbounds for position in a:(lo[c] - 1)
+        h[base + position] = neg
+    end
+    @inbounds for position in (hi[c] + 1):b
+        h[base + position] = neg
+    end
+    lo[c] = min(lo[c], a); hi[c] = max(hi[c], b)
+    return
+end
+
+# Score matrices reused across alignments of the same task, so that each call
+# only resets the area it uses.
+function _poa_buffer(::Type{T}, length::Int) where {T}
+    buffers = get!(() -> Dict{DataType,Any}(), task_local_storage(), :savont_poa_buffers)::Dict{DataType,Any}
+    buffer = get!(() -> T[], buffers, T)::Vector{T}
+    length > Base.length(buffer) && resize!(buffer, length)
+    return buffer
+end
 
 # Banded overlap alignment emulating spoars' SIMD kernels lane by lane: striped
-# segments of `lanes` query columns, element type `T` (Int16 or Int32) with the
+# segments of `L` query columns, element type `T` (Int16 or Int32) with the
 # kernels' saturating and wrapping arithmetic, and spoars' abPOA band geometry.
-function _poa_align_banded(::Type{T}, lanes::Int, graph::POAGraph, sequence, scoring::POAScoring,
-                           rank_of, band::POABand) where {T}
+function _poa_align_banded(::Type{T}, ::Val{L}, graph::POAGraph, sequence, scoring::POAScoring,
+                           rank_of, band::POABand) where {T,L}
     n = length(sequence)
-    segments = cld(n, lanes); padded = segments * lanes
+    segments = cld(n, L); padded = segments * L
     rows = length(graph) + 1
     neg = T(Int(typemin(T)) + 1024)
     g = T(scoring.gap)
@@ -344,18 +405,22 @@ function _poa_align_banded(::Type{T}, lanes::Int, graph::POAGraph, sequence, sco
     for code in 0:(length(graph.decoder) - 1), position in 1:padded
         profile[position, code + 1] = position <= n ? T(_profile_score(graph, scoring, code, sequence[position])) : T(padding)
     end
-    h = fill(neg, padded, rows)
-    for position in 1:n
-        h[position, 1] = T(position * scoring.gap)
+    # Score matrix padded × rows, column-major, addressed linearly: cell
+    # (position, column c) is h[(c - 1) * padded + position]. The buffer is reused,
+    # so only positions lo[c]:hi[c] are valid; a predecessor column is extended with
+    # `neg` before positions outside it are read (see `_StripedMatrix`).
+    h = _poa_buffer(T, padded * rows)
+    lo = fill(padded + 1, rows); hi = zeros(Int, rows)
+    for position in 1:padded
+        h[position] = position <= n ? T(position * scoring.gap) : neg
     end
+    lo[1] = 1; hi[1] = padded
     remaining = _remaining_path(graph, rank_of)
     best_col = zeros(Int, length(graph.rank_to_node))
     width = _band_width(band, n)
-    steps = trailing_zeros(lanes)
     max_score = _POA_NEG_INF; max_i = 0
     floor_value = Int(neg)
-    hv = Vector{T}(undef, lanes)
-    for node in graph.rank_to_node
+    @inbounds for node in graph.rank_to_node
         rank = rank_of[node]; i = rank + 1
         inedges = graph.inedges[node]
         code = graph.codes[node]
@@ -372,46 +437,56 @@ function _poa_align_banded(::Type{T}, lanes::Int, graph::POAGraph, sequence, sco
         end
         window_begin = max(min(low, anchor) - width, 0)
         window_end = min(max(high, anchor) + width + 1, n)
-        first_segment = min(window_begin ÷ lanes, segments - 1)
-        last_segment = min(cld(window_end, lanes), segments)
+        first_segment = min(window_begin ÷ L, segments - 1)
+        last_segment = min(cld(window_end, L), segments)
         last_segment <= first_segment && (last_segment = min(first_segment + 1, segments))
-        first_column = first_segment * lanes + 1
-        last_column = last_segment * lanes
-        # Diagonal and vertical moves, first predecessor then the others.
-        for (p, edge) in enumerate(isempty(inedges) ? [0] : inedges)
-            pred = edge == 0 ? 0 : rank_of[graph.edge_tail[edge]] + 1
-            carry = first_segment == 0 ? T(0) : h[first_column - 1, pred + 1]
-            for position in first_column:last_column
-                diagonal = position == first_column ? carry : h[position - 1, pred + 1]
-                candidate = max(_adds(diagonal, profile[position, code + 1]), _adds(h[position, pred + 1], g))
-                h[position, i + 1] = p == 1 ? candidate : max(h[position, i + 1], candidate)
+        first_column = first_segment * L + 1
+        last_column = last_segment * L
+        # Diagonal and vertical moves, first predecessor then the others. Linear
+        # indices: column `c` of the matrix starts at (c - 1) * padded.
+        row = i * padded; code_offset = code * padded
+        for p in 1:max(length(inedges), 1)
+            pred = isempty(inedges) ? 0 : rank_of[graph.edge_tail[inedges[p]]] + 1
+            pred_row = pred * padded
+            _extend_column!(h, lo, hi, pred + 1, padded, first_segment == 0 ? first_column : first_column - 1,
+                            last_column, neg)
+            diagonal = first_segment == 0 ? T(0) : h[pred_row + first_column - 1]
+            candidate = max(_adds(diagonal, profile[code_offset + first_column]), _adds(h[pred_row + first_column], g))
+            h[row + first_column] = p == 1 ? candidate : max(h[row + first_column], candidate)
+            if p == 1
+                @simd for position in (first_column + 1):last_column
+                    h[row + position] = max(_adds(h[pred_row + position - 1], profile[code_offset + position]),
+                                            _adds(h[pred_row + position], g))
+                end
+            else
+                @simd for position in (first_column + 1):last_column
+                    candidate = max(_adds(h[pred_row + position - 1], profile[code_offset + position]),
+                                    _adds(h[pred_row + position], g))
+                    h[row + position] = max(h[row + position], candidate)
+                end
             end
         end
         # Horizontal gaps: per segment, lane-0 carry then the prefix-max ladder.
         carry = first_segment == 0 ? g : neg      # first_column(i) + g, or closed edge
-        score = fill(neg, lanes)
+        score = ntuple(_ -> neg, Val(L))
         for segment in first_segment:(last_segment - 1)
-            offset = segment * lanes
-            for k in 1:lanes
-                hv[k] = max(h[offset + k, i + 1], k == 1 ? carry : neg)
+            offset = row + segment * L
+            hv = ntuple(k -> max(h[offset + k], neg), Val(L))
+            hv = Base.setindex(hv, max(h[offset + 1], carry), 1)
+            hv = _ladder(hv, g, neg)
+            carry = _adds(hv[L], g)
+            for k in 1:L
+                h[offset + k] = hv[k]
             end
-            for step in 0:(steps - 1)
-                shift = 1 << step
-                penalty = T(Int(g) << step)
-                for k in lanes:-1:1
-                    shifted = k > shift ? hv[k - shift] + penalty : neg     # wrapping add
-                    hv[k] = max(hv[k], shifted)
-                end
-            end
-            carry = _adds(hv[lanes], g)
-            for k in 1:lanes
-                h[offset + k, i + 1] = hv[k]
-                score[k] = max(score[k], hv[k])
-            end
+            score = map(max, score, hv)
         end
+        lo[i + 1] = first_column; hi[i + 1] = last_column
         row_best = Int(maximum(score))
-        column = findfirst(==(row_best), @view h[first_column:last_column, i + 1])
-        best_col[rank + 1] = max((first_column - 1) + (column === nothing ? -1 : column - 1), 0)
+        column = first_column
+        while column <= last_column && Int(h[row + column]) != row_best
+            column += 1
+        end
+        best_col[rank + 1] = max(column <= last_column ? column - 1 : first_column - 2, 0)
         if isempty(graph.outedges[node])
             row_score = row_best <= floor_value ? _POA_NEG_INF : row_best
             if max_score < row_score
@@ -421,9 +496,14 @@ function _poa_align_banded(::Type{T}, lanes::Int, graph::POAGraph, sequence, sco
     end
     max_i == 0 && return Tuple{Int,Int}[], max_score
     max_score == _POA_NEG_INF && return Tuple{Int,Int}[], _POA_NEG_INF
-    column = findfirst(x -> Int(x) == max_score, @view h[:, max_i + 1])
-    column === nothing && return Tuple{Int,Int}[], max_score
-    return _backtrack(graph, sequence, scoring, _StripedMatrix{T}(h, scoring.gap), rank_of, max_i, column), max_score
+    # Uninitialized positions read as neg, below any max_score reaching here.
+    column = lo[max_i + 1]
+    while column <= hi[max_i + 1] && Int(h[max_i * padded + column]) != max_score
+        column += 1
+    end
+    column > hi[max_i + 1] && return Tuple{Int,Int}[], max_score
+    matrix = _StripedMatrix(h, padded, lo, hi, scoring.gap, Int(neg))
+    return _backtrack(graph, sequence, scoring, matrix, rank_of, max_i, column), max_score
 end
 
 """
@@ -454,9 +534,11 @@ function poa_align(graph::POAGraph, sequence::AbstractVector{UInt8}, scoring::PO
     end
     wide = isa === :avx2
     if worst < Int(typemin(Int16)) + 1024
-        return _poa_align_banded(Int32, wide ? 8 : 4, graph, sequence, scoring, rank_of, band)
+        return wide ? _poa_align_banded(Int32, Val(8), graph, sequence, scoring, rank_of, band) :
+                      _poa_align_banded(Int32, Val(4), graph, sequence, scoring, rank_of, band)
     end
-    return _poa_align_banded(Int16, wide ? 16 : 8, graph, sequence, scoring, rank_of, band)
+    return wide ? _poa_align_banded(Int16, Val(16), graph, sequence, scoring, rank_of, band) :
+                  _poa_align_banded(Int16, Val(8), graph, sequence, scoring, rank_of, band)
 end
 
 """

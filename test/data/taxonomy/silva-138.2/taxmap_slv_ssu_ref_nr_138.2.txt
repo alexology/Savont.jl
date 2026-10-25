@@ -1,0 +1,32 @@
+primaryAccession	start	stop	path	organism_name	taxid
+AB000001	1	1010	Bacteria;Bacillota;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;	Lactobacillus acidophilus	40001
+AB000002	1	1094	Bacteria;Bacillota;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;	Lactobacillus gasseri	40002
+AB000003	1	1006	Bacteria;Bacillota;Bacilli;Bacillales;Bacillaceae;Bacillus;	Bacillus subtilis	40003
+AB000004	1	1091	Bacteria;Pseudomonadota;Gammaproteobacteria;Enterobacterales;Enterobacteriaceae;Escherichia;	Escherichia coli	40004
+AB000005	1	1073	Bacteria;Pseudomonadota;Gammaproteobacteria;Enterobacterales;Enterobacteriaceae;Salmonella;	Salmonella enterica	40005
+AB000006	1	1041	Bacteria;Pseudomonadota;Gammaproteobacteria;Pseudomonadales;Pseudomonadaceae;Pseudomonas;	Pseudomonas aeruginosa	40006
+AB000007	1	1034	Bacteria;Actinomycetota;Actinomycetes;Mycobacteriales;Mycobacteriaceae;Mycobacterium;	Mycobacterium tuberculosis	40007
+AB000008	1	1020	Bacteria;Bacteroidota;Bacteroidia;Bacteroidales;Bacteroidaceae;Bacteroides;	Bacteroides fragilis	40009
+AB000009	1	1020	Bacteria;Bacillota;Clostridia;Eubacteriales;Lachnospiraceae;Roseburia;	Roseburia intestinalis	40010
+AB000010	1	1040	Bacteria;Pseudomonadota;Betaproteobacteria;Burkholderiales;Burkholderiaceae;Burkholderia;	Burkholderia cepacia	40011
+AB000011	1	1040	Bacteria;Pseudomonadota;Betaproteobacteria;Burkholderiales;Burkholderiaceae;Burkholderia;	Burkholderia mallei	40012
+AB000012	1	1010	Bacteria;Verrucomicrobiota;Verrucomicrobiia;Verrucomicrobiales;Akkermansiaceae;Akkermansia;	Akkermansia muciniphila	40013
+AB000014	1	1000	Bacteria;Bacillota;Bacilli;Lactobacillales;Streptococcaceae;Streptococcus;	Streptococcus mutans	40014
+AB000015	1	1000	Bacteria;Bacillota;Bacilli;Lactobacillales;Enterococcaceae;Enterococcus;	Enterococcus faecalis	40015
+AB000016	1	1000	Bacteria;Cyanobacteriota;Cyanophyceae;Synechococcales;		40016
+AB000017	1	1000	Bacteria;Bacillota;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;	Lactobacillus acidophilus	40001
+AB000018	1	1000	Bacteria;Bacillota;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;	Lactobacillus gasseri	40002
+AB000019	1	1000	Bacteria;Bacillota;Bacilli;Bacillales;Bacillaceae;Bacillus;	Bacillus subtilis	40003
+AB000020	1	1000	Bacteria;Pseudomonadota;Gammaproteobacteria;Enterobacterales;Enterobacteriaceae;Escherichia;	Escherichia coli	40004
+AB000021	1	1000	Bacteria;Pseudomonadota;Gammaproteobacteria;Enterobacterales;Enterobacteriaceae;Salmonella;	Salmonella enterica	40005
+AB000022	1	1000	Bacteria;Pseudomonadota;Gammaproteobacteria;Pseudomonadales;Pseudomonadaceae;Pseudomonas;	Pseudomonas aeruginosa	40006
+AB000023	1	1000	Bacteria;Actinomycetota;Actinomycetes;Mycobacteriales;Mycobacteriaceae;Mycobacterium;	Mycobacterium tuberculosis	40007
+AB000024	1	1000	Archaea;Methanobacteriota;Methanobacteria;Methanobacteriales;Methanobacteriaceae;Methanobrevibacter;	Methanobrevibacter smithii	40008
+AB000025	1	1000	Bacteria;Bacteroidota;Bacteroidia;Bacteroidales;Bacteroidaceae;Bacteroides;	Bacteroides fragilis	40009
+AB000026	1	1000	Bacteria;Bacillota;Clostridia;Eubacteriales;Lachnospiraceae;Roseburia;	Roseburia intestinalis	40010
+AB000027	1	1000	Bacteria;Pseudomonadota;Betaproteobacteria;Burkholderiales;Burkholderiaceae;Burkholderia;	Burkholderia cepacia	40011
+AB000028	1	1000	Bacteria;Pseudomonadota;Betaproteobacteria;Burkholderiales;Burkholderiaceae;Burkholderia;	Burkholderia mallei	40012
+AB000029	1	1000	Bacteria;Verrucomicrobiota;Verrucomicrobiia;Verrucomicrobiales;Akkermansiaceae;Akkermansia;	Akkermansia muciniphila	40013
+AB000030	1	1000	Bacteria;Bacillota;Bacilli;Lactobacillales;Streptococcaceae;Streptococcus;	Streptococcus mutans	40014
+AB000031	1	1000	Bacteria;Bacillota;Bacilli;Lactobacillales;Enterococcaceae;Enterococcus;	Enterococcus faecalis	40015
+AB999999	1	100

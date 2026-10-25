@@ -5,6 +5,7 @@
 using Savont
 using Test
 using CodecZlib
+using Logging
 
 include("oracle_cases.jl")
 
@@ -118,6 +119,77 @@ function compare_clusters(text, inputs, config)
     @test !isempty(expected_final)
 end
 
+# Per-position pileup summary printed by the oracle `polish` command.
+function pileup_summary(pileup)
+    join([begin
+        matches = count(e -> e.kind == PILEUP_BASE && e.base == p.ref_base, p.entries)
+        deletions = count(e -> e.kind == PILEUP_DELETION, p.entries)
+        insertions = count(e -> e.kind == PILEUP_INSERTION, p.entries)
+        quality = sum((Int(e.quality) for e in p.entries if e.kind == PILEUP_BASE); init=0)
+        inserted = sum((Int(e.quality) + (e.inserted == 2 ? Int(e.quality2) : 0) for e in p.entries if e.kind == PILEUP_INSERTION); init=0)
+        "$(length(p.entries)):$matches:$deletions:$insertions:$quality:$inserted:$(p.ref_hp_length)"
+    end for p in pileup], ',')
+end
+
+# Initial consensus (stage 4a), pileups and polishing (stage 4b), merging (stage 5)
+# and chimera detection (stage 6).
+function compare_consensus(consensus_text, polish_text, merge_text, chimera_text, inputs, config)
+    paths = joinpath.(DATA_DIRECTORY, inputs)
+    info, blockmers = discover_markers(paths, config)
+    reads, low_polymorphism = build_twin_reads(paths, info, blockmers, config)
+    clusters = cluster_reads_by_snpmers(reads, cluster_reads_by_kmers(reads, config), config;
+                                        low_polymorphism=config.low_polymorphism || low_polymorphism)
+    expected = [(parse(Int, f[2]) + 1, parse(Int, f[3]), parse_list(Int, f[4]) .+ 1, f[5]) for f in oracle_rows(consensus_text)]
+    consensuses = initial_consensus(reads, clusters, config)
+    @test [(c.id, c.depth, c.cluster, String(copy(c.sequence))) for c in consensuses] == expected
+    @test !isempty(expected)
+
+    rows = oracle_rows(polish_text)
+    by_id = Dict(c.id => c for c in consensuses)
+    for f in rows
+        f[1] == "pileup" && @test pileup_summary(consensus_pileup(reads, by_id[parse(Int, f[2]) + 1], config)) == f[3]
+    end
+    kept, low_quality, rates = polish_consensuses!(reads, consensuses, config)
+    @test rates == Dict(parse(UInt8, f[2]) => parse(Float64, f[3]) for f in rows if f[1] == "rate")
+    low_ids = Set(c.id for c in low_quality)
+    polished = sort(vcat(kept, low_quality); by=c -> (-c.depth, c.id))
+    @test [(c.id, c.depth, c.id in low_ids, Int.(c.hp_lengths), String(copy(c.sequence)), c.low_quality_positions,
+            String(copy(c.decompressed))) for c in polished] ==
+          [(parse(Int, f[2]) + 1, parse(Int, f[3]), f[4] == "1", parse_list(Int, f[5]), f[6], parse_list(Int, f[7]) .+ 1, f[8])
+           for f in rows if f[1] == "polished"]
+
+    merged = merge_similar_consensuses(kept, config)
+    @test [(c.id, c.depth, c.cluster, String(copy(c.decompressed))) for c in merged] ==
+          [(parse(Int, f[2]) + 1, parse(Int, f[3]), parse_list(Int, f[4]) .+ 1, f[5]) for f in oracle_rows(merge_text)]
+
+    rows = oracle_rows(chimera_text)
+    chimeras = detect_chimeras(merged, config)
+    @test [(c.id, string(c.chimera_score)) for c in merged] == [(parse(Int, f[2]) + 1, f[3]) for f in rows if f[1] == "score"]
+    @test sort([(merged[c.query].id, merged[c.left_parent].id, merged[c.right_parent].id, c.left_match_length,
+                 c.right_match_length, c.query_length, c.coverage_fraction) for c in chimeras]) ==
+          sort([(parse(Int, f[2]) + 1, parse(Int, f[3]) + 1, parse(Int, f[4]) + 1, parse(Int, f[5]), parse(Int, f[6]),
+                 parse(Int, f[7]), parse(Float64, f[8])) for f in rows if f[1] == "chimera"])
+    @test [c.id for c in filter_chimeras(merged, chimeras)] == [parse(Int, f[2]) + 1 for f in rows if f[1] == "kept"]
+end
+
+# The whole pipeline: output files, or the early stop with --skip-chimera-detection.
+function compare_asv(text, inputs, config)
+    rows = split(text, '
+'; keepempty=false)
+    directory = mktempdir()
+    result = savont_asv(joinpath.(DATA_DIRECTORY, inputs), config; output_dir=directory)
+    if rows == ["stopped"]
+        @test result.asvs === nothing
+        @test !isfile(joinpath(directory, "final_asvs.fasta"))
+        return
+    end
+    section(prefix) = [r[length(prefix) + 2:end] for r in rows if startswith(r, prefix * "	")]
+    @test readlines(joinpath(directory, "final_asvs.fasta")) == section("fasta")
+    @test readlines(joinpath(directory, "feature-table.tsv")) == section("table")
+    @test readlines(joinpath(directory, "final_assignments.tsv")) == section("assignment")
+    @test !isempty(section("fasta"))
+end
+
 function compare_poa(text, input, mode, isa)
     rows = oracle_rows(text)
     records = read_records(joinpath(DATA_DIRECTORY, input))
@@ -154,6 +226,47 @@ function compare_stats(text)
     @test binomial_cases > 1000 && fisher_cases > 1000
 end
 
+# Output files of a taxonomy subcommand as `file => lines`, from the oracle text
+# or from the files `run(directory)` writes. Rows of equal abundance in the
+# single-sample abundance tables are sorted, because upstream aggregates them in
+# a hash map and writes ties in arbitrary order.
+function taxonomy_files(text::AbstractString)
+    files = Dict{String,Vector{String}}()
+    for line in split(text, '
+'; keepempty=false)
+        name, row = split(line, '	'; limit=2)
+        push!(get!(Vector{String}, files, name), row)
+    end
+    for (name, rows) in files
+        startswith(rows[1], "abundance	") || continue
+        i = 2
+        while i <= length(rows)
+            j = i
+            while j < length(rows) && first(split(rows[j + 1], '	')) == first(split(rows[i], '	'))
+                j += 1
+            end
+            sort!(view(rows, i:j)); i = j + 1
+        end
+    end
+    return files
+end
+
+function compare_taxonomy(run, text)
+    expected = taxonomy_files(text)
+    actual = mktempdir() do directory
+        output = joinpath(directory, "out")
+        Logging.with_logger(Logging.NullLogger()) do
+            run(output)
+        end
+        taxonomy_files(join(("$name	$line
+" for name in sort(readdir(output)) for line in eachline(joinpath(output, name))), ""))
+    end
+    @test sort(collect(keys(actual))) == sort(collect(keys(expected)))
+    for name in keys(expected)
+        @test get(actual, name, String[]) == expected[name]
+    end
+end
+
 source = haskey(ENV, "SAVONT_RUST_ORACLE") ? "live oracle" : "stored oracle output"
 @testset "upstream oracle ($source)" begin
     @testset "primitives $input $(p)" for input in PRIMITIVE_INPUTS, p in PRIMITIVE_PARAMETERS
@@ -168,8 +281,34 @@ source = haskey(ENV, "SAVONT_RUST_ORACLE") ? "live oracle" : "stored oracle outp
         config = SavontConfig(; upstream_quirks=true, keywords...)
         compare_clusters(oracle_text(o -> cluster_command(o, inputs, arguments), cluster_reference_name(name)), inputs, config)
     end
+    @testset "consensus, polishing, merging and chimeras $name" for (name, inputs, arguments, keywords) in CLUSTER_RUNS
+        config = SavontConfig(; upstream_quirks=true, keywords...)
+        compare_consensus(oracle_text(o -> consensus_command(o, inputs, arguments), consensus_reference_name(name)),
+                          oracle_text(o -> polish_command(o, inputs, arguments), polish_reference_name(name)),
+                          oracle_text(o -> merge_command(o, inputs, arguments), merge_reference_name(name)),
+                          oracle_text(o -> chimera_command(o, inputs, arguments), chimera_reference_name(name)), inputs, config)
+    end
+    @testset "pipeline and output files $name" for (name, inputs, arguments, keywords) in ASV_RUNS
+        config = SavontConfig(; upstream_quirks=true, keywords...)
+        compare_asv(oracle_text(o -> asv_command(o, inputs, arguments), asv_reference_name(name)), inputs, config)
+    end
     @testset "markers $name" for (name, arguments, keywords) in MARKER_RUNS
         config = SavontConfig(; keywords...)
         compare_markers(oracle_text(o -> marker_command(o, arguments), marker_reference_name(name)), config)
+    end
+    @testset "classify $name" for (name, input, db, arguments, keywords) in CLASSIFY_RUNS
+        compare_taxonomy(oracle_text(o -> classify_command(o, input, db, arguments), classify_reference_name(name))) do output
+            savont_classify(joinpath(TAXONOMY_DIRECTORY, input), joinpath(TAXONOMY_DIRECTORY, db); output_dir=output, keywords...)
+        end
+    end
+    @testset "sintax $name" for (name, input, db, arguments, keywords) in SINTAX_RUNS
+        compare_taxonomy(oracle_text(o -> sintax_command(o, input, db, arguments), sintax_reference_name(name))) do output
+            savont_sintax(joinpath(TAXONOMY_DIRECTORY, input), joinpath(TAXONOMY_DIRECTORY, db); output_dir=output, keywords...)
+        end
+    end
+    @testset "export $name" for (name, inputs, arguments, keywords) in EXPORT_RUNS
+        compare_taxonomy(oracle_text(o -> export_command(o, inputs, arguments), export_reference_name(name))) do output
+            savont_export(joinpath.(TAXONOMY_DIRECTORY, inputs), output; upstream_quirks=true, keywords...)
+        end
     end
 end

@@ -101,21 +101,37 @@ function count_split_kmers(paths::AbstractVector{<:AbstractString}, config::Savo
         throw(ArgumentError("Bloom prefiltering (bloom_filter_size > 0) is not implemented"))
     k = config.kmer_size; l = config.blockmer_length; minimum_bq = config.minimum_base_quality
     mask = ~(UInt64(1) << 63)
-    snpmer_index = Dict{UInt64,Int}(); snpmer_counts = KmerCount[]
-    blockmer_index = Dict{UInt64,Int}(); blockmer_counts = KmerCount[]
-    foreach_record(paths) do record
-        for value in split_kmer_mid(record.sequence, record.qualities, k, minimum_bq)
-            _add_count!(snpmer_index, snpmer_counts, value & mask, (value >> 63) == 1)
+    # Counts are sharded by k-mer (one task per shard), so that threads never share
+    # a table and no k-mer is stored twice; the result is sorted by k-mer anyway.
+    shards = max(Threads.nthreads(), 1)
+    snpmer_shards = [(Dict{UInt64,Int}(), KmerCount[]) for _ in 1:shards]
+    blockmer_shards = [(Dict{UInt64,Int}(), KmerCount[]) for _ in 1:shards]
+    _foreach_batch(paths) do batch
+        values = Vector{Vector{UInt64}}(undef, length(batch))
+        blocks = Vector{Vector{Blockmer}}(undef, length(batch))
+        Threads.@threads :dynamic for i in eachindex(batch)
+            record = batch[i]
+            values[i] = split_kmer_mid(record.sequence, record.qualities, k, minimum_bq)
+            blocks[i] = config.use_blockmers ? blockmer_kmers(record.sequence, record.qualities, k, l, minimum_bq) : Blockmer[]
         end
-        if config.use_blockmers
-            for blockmer in blockmer_kmers(record.sequence, record.qualities, k, l, minimum_bq)
-                _add_count!(blockmer_index, blockmer_counts, blockmer.kmer, blockmer.is_forward)
+        @sync for s in 1:shards
+            Threads.@spawn begin
+                snpmer_index, snpmer_counts = snpmer_shards[s]
+                blockmer_index, blockmer_counts = blockmer_shards[s]
+                for record_values in values, value in record_values
+                    key = value & mask
+                    key % shards == s - 1 && _add_count!(snpmer_index, snpmer_counts, key, (value >> 63) == 1)
+                end
+                for record_blocks in blocks, blockmer in record_blocks
+                    blockmer.kmer % shards == s - 1 &&
+                        _add_count!(blockmer_index, blockmer_counts, blockmer.kmer, blockmer.is_forward)
+                end
             end
         end
     end
-    raw = length(snpmer_counts)
-    snpmers = _retain_counts(snpmer_counts, config.single_strand)
-    blockmers = _retain_counts(blockmer_counts, config.single_strand)
+    raw = sum(shard -> length(shard[2]), snpmer_shards)
+    snpmers = _retain_counts(reduce(vcat, (shard[2] for shard in snpmer_shards)), config.single_strand)
+    blockmers = _retain_counts(reduce(vcat, (shard[2] for shard in blockmer_shards)), config.single_strand)
     if length(snpmers) < raw ÷ 1000
         error("less than 0.1% of split k-mers have counts on both strands and multiplicity > 2; " *
               "this may indicate a problem with the input data or very low coverage (consider single_strand=true)")

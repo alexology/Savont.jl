@@ -1,0 +1,5 @@
+asv_header	depth	alignment_identity	number_mismatches	tax_id	species	genus	family	order	class	phylum	clade	superkingdom	reference
+final_asv_0_depth_300	300	100.00	0	1001	Lactobacillus acidophilus	Lactobacillus	Lactobacillaceae	Lactobacillales	Bacilli	Bacillota	Terrabacteria group	Bacteria	1001:emu_db:1
+final_asv_0_depth_300	300	100.00	0	1002	Lactobacillus gasseri	Lactobacillus	Lactobacillaceae	Lactobacillales	Bacilli	Bacillota	Terrabacteria group	Bacteria	1002:emu_db:1
+final_asv_1_depth_200	200	99.20	0	1004	Escherichia coli	Escherichia	Enterobacteriaceae	Enterobacterales	Gammaproteobacteria	Pseudomonadota		Bacteria	1004:emu_db:2
+final_asv_2_depth_150	150	97.10	0	1009	Bacteroides fragilis	Bacteroides	Bacteroidaceae	Bacteroidales	Bacteroidia	Bacteroidota	FCB group	Bacteria	1009:emu_db:3

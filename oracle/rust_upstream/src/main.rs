@@ -10,6 +10,8 @@
 mod alignment;
 #[path = "../../../reference/savont/src/asv_cluster.rs"]
 mod asv_cluster;
+#[path = "../../../reference/savont/src/chimera.rs"]
+mod chimera;
 #[path = "../../../reference/savont/src/cli.rs"]
 mod cli;
 #[path = "../../../reference/savont/src/constants.rs"]
@@ -25,10 +27,16 @@ mod types;
 #[path = "../../../reference/savont/src/utils.rs"]
 mod utils;
 
-/// cli.rs only needs the download keywords; the full module pulls in taxonomy.
-mod databases {
-    pub const KEYWORDS: &[&str] = &["emu-1", "silva-138.2", "greengenes2-2024.09", "unite-10.0"];
-}
+#[path = "../../../reference/savont/src/classify.rs"]
+mod classify;
+#[path = "../../../reference/savont/src/databases.rs"]
+mod databases;
+#[path = "../../../reference/savont/src/merge.rs"]
+mod merge;
+#[path = "../../../reference/savont/src/sintax.rs"]
+mod sintax;
+#[path = "../../../reference/savont/src/taxonomy.rs"]
+mod taxonomy;
 
 use clap::Parser;
 
@@ -211,6 +219,29 @@ fn poa(args: &[String]) {
     println!("consensus\t{}", graph.generate_consensus());
 }
 
+/// `seedmap <fastx>`: maps every record after the first to the first one with the
+/// minimap2 crate configured as in alignment.rs::align_and_consensus.
+fn seedmap(args: &[String]) {
+    let mut reader = needletail::parse_fastx_file(&args[0]).expect("valid path");
+    let mut sequences = Vec::new();
+    while let Some(record) = reader.next() {
+        sequences.push(record.expect("valid record").seq().to_vec());
+    }
+    let aligner = minimap2::Aligner::builder().map_ont().with_index_threads(1).with_cigar().with_seq(&sequences[0]).unwrap();
+    for (i, seq) in sequences.iter().enumerate().skip(1) {
+        match aligner.map(seq, true, false, None, None, None) {
+            Err(e) => println!("map\t{i}\terror\t{e}"),
+            Ok(mappings) => {
+                for m in mappings.iter() {
+                    let cigar = m.alignment.as_ref().and_then(|a| a.cigar_str.clone()).unwrap_or_default();
+                    println!("map\t{i}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", if m.strand == minimap2::Strand::Reverse { '-' } else { '+' },
+                             m.query_start, m.query_end, m.target_start, m.target_end, m.mapq, cigar);
+                }
+            }
+        }
+    }
+}
+
 fn optional_csv<T: ToString>(values: &[Option<T>]) -> String {
     values
         .iter()
@@ -222,6 +253,291 @@ fn optional_csv<T: ToString>(values: &[Option<T>]) -> String {
 /// `cluster <savont asv arguments>`: twin reads (stage 1.5), primary k-mer
 /// clustering (stage 2) and polymorphic-marker clustering (stage 3).
 fn cluster(args: &[String]) {
+    stages(args, true);
+}
+
+/// `consensus <savont asv arguments>`: stages 1-3, then the initial POA consensus
+/// of each cluster (alignment.rs::align_and_consensus, stage 4a).
+fn consensus(args: &[String]) {
+    let (cluster_args, twin_reads, final_clusters, _) = stages(args, false);
+    let directory = std::env::temp_dir().join(format!("savont-oracle-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let consensuses = alignment::align_and_consensus(&twin_reads, final_clusters, &cluster_args, &directory);
+    std::fs::remove_dir_all(&directory).unwrap();
+    for c in consensuses.iter() {
+        println!("consensus\t{}\t{}\t{}\t{}", c.id, c.depth, csv(&c.cluster), String::from_utf8(c.sequence.clone()).unwrap());
+    }
+}
+
+/// `polish <savont asv arguments>`: stages 1-4 as main.rs (initial consensus,
+/// pileups, quality error rates, posterior analysis and low-quality partition).
+/// Prints the error rates, a per-position summary of every pileup and each
+/// polished consensus before the low-quality consensuses are removed.
+fn polish(args: &[String]) {
+    polish_stage(args, true);
+}
+
+/// `merge <savont asv arguments>`: stages 1-4, decompression as main.rs, then
+/// stage 5 (alignment::merge_similar_consensuses). Prints the merged consensuses.
+fn merge(args: &[String]) {
+    let (cluster_args, twin_reads, consensuses, low_quality, _) = polish_stage(args, false);
+    let directory = std::env::temp_dir().join(format!("savont-oracle-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let merged = alignment::merge_similar_consensuses(&twin_reads, consensuses, low_quality, &cluster_args, &directory);
+    std::fs::remove_dir_all(&directory).unwrap();
+    for c in merged.iter() {
+        println!(
+            "merged	{}	{}	{}	{}",
+            c.id,
+            c.depth,
+            csv(&c.cluster),
+            String::from_utf8(c.decompressed_sequence.clone().unwrap()).unwrap()
+        );
+    }
+}
+
+/// `chimera <savont asv arguments>`: stages 1-5, then chimera detection and
+/// filtering (stage 6). Prints every consensus with its chimera score, the
+/// detected chimera combinations (sorted; upstream collects them in parallel) and
+/// the consensuses that remain.
+fn chimera_stage(args: &[String]) {
+    let (cluster_args, twin_reads, consensuses, low_quality, _) = polish_stage(args, false);
+    let directory = std::env::temp_dir().join(format!("savont-oracle-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut merged = alignment::merge_similar_consensuses(&twin_reads, consensuses, low_quality, &cluster_args, &directory);
+    std::fs::remove_dir_all(&directory).unwrap();
+    let chimeras = chimera::detect_chimeras(&mut merged, &cluster_args);
+    for c in merged.iter() {
+        println!("score	{}	{}", c.id, c.chimera_score.map_or("-".to_string(), |s| s.to_string()));
+    }
+    let mut rows: Vec<String> = chimeras
+        .iter()
+        .map(|c| {
+            format!(
+                "chimera	{}	{}	{}	{}	{}	{}	{:?}",
+                merged[c.query_idx].id,
+                merged[c.left_parent_idx].id,
+                merged[c.right_parent_idx].id,
+                c.left_match_len,
+                c.right_match_len,
+                c.query_len,
+                c.coverage_fraction
+            )
+        })
+        .collect();
+    rows.sort();
+    for row in rows {
+        println!("{}", row);
+    }
+    for c in chimera::filter_chimeras(merged, &chimeras).iter() {
+        println!("kept	{}", c.id);
+    }
+}
+
+/// `em <savont asv arguments>`: stages 1-6 (stage 6 unless --skip-chimera-detection),
+/// then stage 7 (alignment::refine_asv_depths_with_em) and main.rs's final sort.
+/// Prints the final ASVs in order and the sorted rows of read_to_asv_mappings.tsv.
+fn em(args: &[String]) {
+    let (cluster_args, twin_reads, consensuses, low_quality, kmer_info) = polish_stage(args, false);
+    let directory = std::env::temp_dir().join(format!("savont-oracle-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut merged = alignment::merge_similar_consensuses(&twin_reads, consensuses, low_quality, &cluster_args, &directory);
+    if !cluster_args.skip_chimera_detection {
+        let chimeras = chimera::detect_chimeras(&mut merged, &cluster_args);
+        merged = chimera::filter_chimeras(merged, &chimeras);
+    }
+    alignment::refine_asv_depths_with_em(&twin_reads, &mut merged, &kmer_info, &cluster_args, &directory);
+    merged.sort_by(|a, b| b.depth.cmp(&a.depth).then_with(|| a.sequence.cmp(&b.sequence)).then_with(|| a.id.cmp(&b.id)));
+    let mappings = std::fs::read_to_string(directory.join("read_to_asv_mappings.tsv")).unwrap_or_default();
+    std::fs::remove_dir_all(&directory).unwrap();
+    for c in merged.iter() {
+        println!(
+            "asv	{}	{}	{}	{}	{}	{}",
+            c.id,
+            c.depth,
+            c.unambig_best_read_map_count.map_or("-".to_string(), |x| x.to_string()),
+            c.ambig_read_map_count.map_or("-".to_string(), |x| x.to_string()),
+            c.num_map_leq_10nm.map_or("-".to_string(), |x| x.to_string()),
+            String::from_utf8(c.decompressed_sequence.clone().unwrap()).unwrap()
+        );
+    }
+    let mut rows: Vec<&str> = mappings.lines().collect();
+    rows.sort();
+    for row in rows {
+        println!("mapping	{}", row);
+    }
+}
+
+/// `asv <savont asv arguments>`: the whole pipeline as main.rs::run_cluster from
+/// stage 5 on (stage 7b with --pooled-samples), writing final_asvs.fasta,
+/// feature-table.tsv and final_assignments.tsv to a temporary directory and
+/// printing them (`fasta`, `table`, `assignment` lines). Prints `stopped` where
+/// main.rs returns early (--skip-chimera-detection).
+fn asv(args: &[String]) {
+    let (cluster_args, twin_reads, consensuses, low_quality, kmer_info) = polish_stage(args, false);
+    let directory = std::env::temp_dir().join(format!("savont-oracle-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut consensuses = alignment::merge_similar_consensuses(&twin_reads, consensuses, low_quality, &cluster_args, &directory);
+    if cluster_args.skip_chimera_detection {
+        std::fs::remove_dir_all(&directory).unwrap();
+        println!("stopped");
+        return;
+    }
+    let chimeras = chimera::detect_chimeras(&mut consensuses, &cluster_args);
+    let mut consensuses = chimera::filter_chimeras(consensuses, &chimeras);
+    alignment::refine_asv_depths_with_em(&twin_reads, &mut consensuses, &kmer_info, &cluster_args, &directory);
+    consensuses.sort_by(|a, b| b.depth.cmp(&a.depth).then_with(|| a.sequence.cmp(&b.sequence)).then_with(|| a.id.cmp(&b.id)));
+    let debug_to_final: std::collections::HashMap<usize, usize> =
+        consensuses.iter().enumerate().map(|(i, c)| (c.id, i)).collect();
+    let em_fasta = directory.join("final_asvs_for_em.fasta");
+    alignment::write_consensus_fasta(&consensuses, &em_fasta, "em_refinement").unwrap();
+    let sample_names: Vec<String> = cluster_args
+        .input_files
+        .iter()
+        .map(|f| std::path::Path::new(f).file_stem().and_then(|s| s.to_str()).unwrap_or("sample").to_string())
+        .collect();
+    if cluster_args.pooled_samples && cluster_args.input_files.len() > 1 {
+        let per_sample = alignment::compute_per_sample_depths(
+            &twin_reads,
+            cluster_args.input_files.len(),
+            &consensuses,
+            &kmer_info,
+            &cluster_args,
+            &em_fasta,
+        );
+        for (i, c) in consensuses.iter_mut().enumerate() {
+            c.per_sample_depths = per_sample[i].clone();
+        }
+    }
+    let fasta = directory.join("final_asvs.fasta");
+    alignment::write_consensus_fasta(&consensuses, &fasta, "final").unwrap();
+    // As main.rs::write_feature_table.
+    let names: Vec<&str> = if cluster_args.pooled_samples && cluster_args.input_files.len() > 1 {
+        sample_names.iter().map(|s| s.as_str()).collect()
+    } else {
+        vec![sample_names[0].as_str()]
+    };
+    let mut table = format!("#OTU ID	{}
+", names.join("	"));
+    for (i, c) in consensuses.iter().enumerate() {
+        if c.per_sample_depths.is_empty() {
+            let depth = c.depth + c.appended_depth;
+            table.push_str(&format!("final_asv_{}_depth_{}	{}
+", i, depth, depth));
+        } else {
+            let depths: Vec<String> = c.per_sample_depths.iter().map(|d| d.to_string()).collect();
+            table.push_str(&format!("final_asv_{}_depth_{}	{}
+", i, depths.join("-"), depths.join("	")));
+        }
+    }
+    consensuses.iter_mut().enumerate().for_each(|(i, c)| c.id = i);
+    let assignments = directory.join("final_assignments.tsv");
+    alignment::write_final_assignments(
+        &twin_reads,
+        &consensuses,
+        &directory.join("read_to_asv_mappings.tsv"),
+        &debug_to_final,
+        &assignments,
+    )
+    .unwrap();
+    let fasta_text = std::fs::read_to_string(&fasta).unwrap();
+    let assignment_text = std::fs::read_to_string(&assignments).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+    for line in fasta_text.lines() {
+        println!("fasta	{}", line);
+    }
+    for line in table.lines() {
+        println!("table	{}", line);
+    }
+    for line in assignment_text.lines() {
+        println!("assignment	{}", line);
+    }
+}
+
+/// Stages 1-4 up to the decompressed high- and low-quality consensuses.
+fn polish_stage(
+    args: &[String],
+    verbose: bool,
+) -> (
+    cli::ClusterArgs,
+    Vec<types::TwinRead>,
+    Vec<types::ConsensusSequence>,
+    Vec<types::ConsensusSequence>,
+    types::KmerGlobalInfo,
+) {
+    let (cluster_args, twin_reads, final_clusters, kmer_info) = stages(args, false);
+    let directory = std::env::temp_dir().join(format!("savont-oracle-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut consensuses = alignment::align_and_consensus(&twin_reads, final_clusters, &cluster_args, &directory);
+    let batches = alignment::plan_pileup_batches(&consensuses, &cluster_args);
+    let top_indices = alignment::top_cluster_indices(&consensuses, 0.1);
+    let quality_error_map = {
+        let top = alignment::generate_consensus_pileups(&twin_reads, &mut consensuses, &cluster_args, &top_indices);
+        alignment::estimate_quality_error_rates(&top)
+    };
+    let mut qualities: Vec<u8> = quality_error_map.keys().cloned().collect();
+    qualities.sort();
+    for q in qualities.iter().filter(|_| verbose) {
+        println!("rate	{}	{:?}", q, quality_error_map[q]);
+    }
+    for batch in &batches {
+        let pileups = alignment::generate_consensus_pileups(&twin_reads, &mut consensuses, &cluster_args, batch);
+        for (local, &index) in batch.iter().enumerate().filter(|_| verbose) {
+            let summary: Vec<String> = pileups[local]
+                .iter()
+                .map(|p| {
+                    let (mut matches, mut deletions, mut insertions, mut quality, mut inserted_quality) = (0, 0, 0, 0u64, 0u64);
+                    for b in &p.bases {
+                        match b {
+                            alignment::PileupBase::Base(base, q, _) => {
+                                matches += usize::from(*base == p.ref_base);
+                                quality += *q as u64;
+                            }
+                            alignment::PileupBase::Deletion => deletions += 1,
+                            alignment::PileupBase::Insertion(data) => {
+                                insertions += 1;
+                                inserted_quality += data.iter().map(|x| x.1 as u64).sum::<u64>();
+                            }
+                        }
+                    }
+                    format!("{}:{}:{}:{}:{}:{}:{}", p.depth(), matches, deletions, insertions, quality, inserted_quality, p.ref_hp_length)
+                })
+                .collect();
+            println!("pileup	{}	{}", consensuses[index].id, summary.join(","));
+        }
+        alignment::analyze_pileup_consensuses(pileups, batch, &mut consensuses, &quality_error_map, &cluster_args);
+    }
+    let mut low_quality = alignment::collect_low_quality_consensuses(&mut consensuses, &twin_reads, &cluster_args, &directory);
+    std::fs::remove_dir_all(&directory).unwrap();
+    // As main.rs: decompress before merging.
+    for c in consensuses.iter_mut().chain(low_quality.iter_mut()) {
+        c.decompress();
+    }
+    if verbose {
+        let low_ids: Vec<usize> = low_quality.iter().map(|c| c.id).collect();
+        let mut all: Vec<&types::ConsensusSequence> = consensuses.iter().chain(low_quality.iter()).collect();
+        all.sort_by(|a, b| b.depth.cmp(&a.depth).then_with(|| a.id.cmp(&b.id)));
+        for c in all {
+            println!(
+                "polished	{}	{}	{}	{}	{}	{}	{}",
+                c.id,
+                c.depth,
+                u8::from(low_ids.contains(&c.id)),
+                csv(&c.hp_lengths),
+                String::from_utf8(c.sequence.clone()).unwrap(),
+                csv(&c.low_quality_positions),
+                String::from_utf8(c.decompressed_sequence.clone().unwrap()).unwrap()
+            );
+        }
+    }
+    (cluster_args, twin_reads, consensuses, low_quality, kmer_info)
+}
+
+/// Stages 1-3; with `verbose`, prints retained reads and clusters.
+fn stages(
+    args: &[String],
+    verbose: bool,
+) -> (cli::ClusterArgs, Vec<types::TwinRead>, Vec<Vec<usize>>, types::KmerGlobalInfo) {
     let mut argv = vec!["savont-asv".to_string()];
     argv.extend_from_slice(args);
     let mut cluster_args = cli::ClusterArgs::parse_from(argv);
@@ -249,13 +565,15 @@ fn cluster(args: &[String]) {
     });
     let without = twin_reads.iter().filter(|tr| tr.snpmers_vec().is_empty()).count();
     let fraction_without = without as f64 / twin_reads.len() as f64;
-    println!("low_polymorphism\t{}", u8::from(fraction_without > 0.75));
+    if verbose {
+        println!("low_polymorphism\t{}", u8::from(fraction_without > 0.75));
+    }
     // As main.rs: auto-enable low-polymorphism mode.
     if fraction_without > 0.75 && !cluster_args.low_polymorphism {
         cluster_args.low_polymorphism = true;
     }
 
-    for (index, read) in twin_reads.iter().enumerate() {
+    for (index, read) in twin_reads.iter().enumerate().filter(|_| verbose) {
         let qualities = read
             .qual_seq
             .as_ref()
@@ -284,22 +602,67 @@ fn cluster(args: &[String]) {
     let directory = std::env::temp_dir().join(format!("savont-oracle-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let clusters = asv_cluster::cluster_reads_by_kmers(&twin_reads, &cluster_args, &directory);
-    for members in clusters.iter() {
+    for members in clusters.iter().filter(|_| verbose) {
         println!("cluster\t{}", csv(members));
     }
     let final_clusters =
         asv_cluster::cluster_reads_by_snpmers(&twin_reads, &clusters, &cluster_args, &directory);
     // Greedy SNPmer clusters before reclustering, as written by upstream.
     let greedy = directory.join("snpmer_clusters_before_reclust2.5.tsv");
-    if let Ok(text) = std::fs::read_to_string(&greedy) {
+    if let (true, Ok(text)) = (verbose, std::fs::read_to_string(&greedy)) {
         for line in text.lines().skip(1) {
             let fields = line.split('\t').collect::<Vec<_>>();
             println!("greedy\t{}\t{}", fields[0], fields[4]);
         }
     }
     std::fs::remove_dir_all(&directory).unwrap();
-    for members in final_clusters.iter() {
+    for members in final_clusters.iter().filter(|_| verbose) {
         println!("final\t{}", csv(members));
+    }
+    (cluster_args, twin_reads, final_clusters, kmer_info)
+}
+
+/// `taxonomy <savont classify|sintax|export arguments>`: runs the subcommand as
+/// `main.rs` does (thread pool, database loading; logging omitted) and prints
+/// every file of its output directory as `<file name>	<line>`, files in name order.
+fn taxonomy_command(args: &[String]) {
+    let cli = cli::Cli::parse_from(std::iter::once("savont".to_string()).chain(args.iter().cloned()));
+    let pool = |threads: usize| {
+        rayon::ThreadPoolBuilder::new().num_threads(threads).stack_size(16 * 1024 * 1024).build_global().unwrap()
+    };
+    let output_dir = match &cli.command {
+        cli::Commands::Classify(a) => {
+            pool(a.threads);
+            let output = a.output_dir.clone().unwrap_or(a.input_dir.clone());
+            std::fs::create_dir_all(&output).unwrap();
+            let db = databases::load_database(std::path::Path::new(&a.db)).unwrap();
+            classify::classify(a, &db);
+            output
+        }
+        cli::Commands::Sintax(a) => {
+            pool(a.threads);
+            let output = a.output_dir.clone().unwrap_or(a.input_dir.clone());
+            std::fs::create_dir_all(&output).unwrap();
+            let db = databases::load_database(std::path::Path::new(&a.db)).unwrap();
+            sintax::sintax(a, &db);
+            output
+        }
+        cli::Commands::Export(a) => {
+            merge::export(a);
+            a.output_dir.clone()
+        }
+        _ => panic!("taxonomy: expected classify, sintax or export"),
+    };
+    let mut names: Vec<String> = std::fs::read_dir(&output_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    for name in names {
+        let text = std::fs::read_to_string(std::path::Path::new(&output_dir).join(&name)).unwrap();
+        for line in text.lines() {
+            println!("{}	{}", name, line);
+        }
     }
 }
 
@@ -311,6 +674,14 @@ fn main() {
         Some("markers") => markers(&args[2..]),
         Some("cluster") => cluster(&args[2..]),
         Some("poa") => poa(&args[2..]),
+        Some("consensus") => consensus(&args[2..]),
+        Some("seedmap") => seedmap(&args[2..]),
+        Some("polish") => polish(&args[2..]),
+        Some("merge") => merge(&args[2..]),
+        Some("chimera") => chimera_stage(&args[2..]),
+        Some("em") => em(&args[2..]),
+        Some("asv") => asv(&args[2..]),
+        Some("taxonomy") => taxonomy_command(&args[2..]),
         _ => {
             eprintln!("usage: savont-upstream-oracle primitives|stats|markers|cluster|poa ...");
             std::process::exit(2);

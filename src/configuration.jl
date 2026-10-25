@@ -25,6 +25,8 @@ Base.@kwdef struct SavontConfig
     primary_clustering_threshold::Float64 = 0.95
     sampling_rate::Int = 11
     pooled_samples::Bool = false
+    # Vector width emulated by the banded partial order alignment (:avx2 or :sse41).
+    poa_isa::Symbol = :avx2
     # Reproduce upstream bugs listed in docs/deviations.md (for oracle comparisons).
     upstream_quirks::Bool = false
 end
@@ -37,6 +39,10 @@ function validate(config::SavontConfig)
     isodd(config.kmer_size) && 0 < config.kmer_size < 24 || throw(ArgumentError("kmer_size must be odd and smaller than 24"))
     config.kmer_size + config.blockmer_length <= 31 || throw(ArgumentError("kmer_size + blockmer_length must be at most 31"))
     0 < config.sampling_rate <= config.kmer_size || throw(ArgumentError("sampling_rate must be in 1:kmer_size"))
+    # An even sampling rate has no central s-mer, so the two strands of a read get
+    # different syncmers (deviation D11); upstream accepts it.
+    isodd(config.sampling_rate) || config.upstream_quirks ||
+        throw(ArgumentError("sampling_rate must be odd (an even value separates the two strands)"))
     0.0 <= config.primary_clustering_threshold <= 1.0 || throw(ArgumentError("primary_clustering_threshold must be in [0, 1]"))
     return config
 end
@@ -53,4 +59,21 @@ function apply_preset(config::SavontConfig, preset::Symbol)
         throw(ArgumentError("unknown preset: $preset"))
     end
     return validate(SavontConfig(; updated...))
+end
+
+# Threaded map keeping the order of `items` (one task per item). Every task is
+# waited for before the first failure (in item order) is rethrown, so no task is
+# still running when the caller returns or throws.
+function _tmap(f, items)
+    tasks = [Threads.@spawn f(item) for item in items]
+    failure = nothing
+    for task in tasks
+        try
+            wait(task)
+        catch e
+            failure === nothing && (failure = e)
+        end
+    end
+    failure === nothing || throw(failure)
+    return map(fetch, tasks)
 end

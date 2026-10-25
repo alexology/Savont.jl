@@ -5,15 +5,27 @@ version = "0.1.0"
 
 [deps]
 CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
+Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 FASTX = "c2308a5c-f048-11e8-3e8a-31650f418d12"
+Minimap2 = "0e7524eb-43f0-432d-96d8-0e057f6af913"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Tar = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
+
+[sources]
+Minimap2 = {path = "../Minimap2.jl"}
 
 [compat]
 CodecZlib = "0.7"
+Downloads = "1"
 FASTX = "2"
+Minimap2 = "0.1"
+Printf = "1"
+Tar = "1"
 julia = "1.10"
 
 [extras]
+Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test"]
+test = ["Logging", "Test"]

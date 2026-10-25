@@ -1,0 +1,18 @@
+tax_id	species	genus	family	order	class	phylum	clade	superkingdom	subspecies	species subgroup	species group
+1001	Lactobacillus acidophilus	Lactobacillus	Lactobacillaceae	Lactobacillales	Bacilli	Bacillota	Terrabacteria group	Bacteria			
+1002	Lactobacillus gasseri	Lactobacillus	Lactobacillaceae	Lactobacillales	Bacilli	Bacillota	Terrabacteria group	Bacteria			
+1003	Bacillus subtilis	Bacillus	Bacillaceae	Bacillales	Bacilli	Bacillota	Terrabacteria group	Bacteria			
+1004	Escherichia coli	Escherichia	Enterobacteriaceae	Enterobacterales	Gammaproteobacteria	Pseudomonadota		Bacteria			
+1005	Salmonella enterica	Salmonella	Enterobacteriaceae	Enterobacterales	Gammaproteobacteria	Pseudomonadota		Bacteria			
+1006	Pseudomonas aeruginosa	Pseudomonas	Pseudomonadaceae	Pseudomonadales	Gammaproteobacteria	Pseudomonadota		Bacteria			
+1007	Mycobacterium tuberculosis	Mycobacterium	Mycobacteriaceae	Mycobacteriales	Actinomycetes	Actinomycetota	Terrabacteria group	Bacteria			
+1008	Methanobrevibacter smithii	Methanobrevibacter	Methanobacteriaceae	Methanobacteriales	Methanobacteria	Methanobacteriota		Archaea			
+1009	Bacteroides fragilis	Bacteroides	Bacteroidaceae	Bacteroidales	Bacteroidia	Bacteroidota	FCB group	Bacteria			
+1010	Roseburia intestinalis	Roseburia	Lachnospiraceae	Eubacteriales	Clostridia	Bacillota	Terrabacteria group	Bacteria			
+1011	Burkholderia cepacia	Burkholderia	Burkholderiaceae	Burkholderiales	Betaproteobacteria	Pseudomonadota		Bacteria			
+1012	Burkholderia mallei	Burkholderia	Burkholderiaceae	Burkholderiales	Betaproteobacteria	Pseudomonadota		Bacteria			
+1013	Akkermansia muciniphila	Akkermansia	Akkermansiaceae	Verrucomicrobiales	Verrucomicrobiia	Verrucomicrobiota	PVC group	Bacteria			
+1014	Streptococcus mutans	Streptococcus	Streptococcaceae	Lactobacillales	Bacilli	Bacillota	Terrabacteria group	Bacteria			
+1015	Enterococcus faecalis	Enterococcus	Enterococcaceae	Lactobacillales	Bacilli	Bacillota	Terrabacteria group	Bacteria			
+1016				Synechococcales	Cyanophyceae	Cyanobacteriota	Terrabacteria group	Bacteria			
+12345	Truncated line

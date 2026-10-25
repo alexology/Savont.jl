@@ -15,10 +15,12 @@ k-mer start positions, as upstream.
 - `id`: full header line; `base_id`: its first word; `file_index`: 1-based input
   file; `base_length`: read length.
 - `sequence`: upper-case bases, with every non-ACGT byte (including `N` and `U`)
-  replaced by `A`, as upstream's 2-bit storage.
+  replaced by `A`, as upstream's 2-bit storage. Stored with 2 bits per base
+  (`packed_sequence`) and decoded into a new vector at each access.
 - `binned_qualities`: for each block of four bases, the minimum Phred+33 byte
   rounded to upstream's 4-bit `QualCompact3` code (`(byte - 32) ÷ 3`, clamped to
   0–15; the represented byte is `3 * code + 33`); `nothing` for FASTA input.
+  Stored with two codes per byte (`packed_qualities`) and decoded at each access.
 - `estimated_identity`: mean per-base accuracy in percent from the qualities;
   `nothing` without qualities or when all qualities are equal.
 - `minimizer_kmers`/`minimizer_positions`: open syncmers (see [`twin_read`](@ref)).
@@ -37,8 +39,9 @@ mutable struct TwinRead
     base_id::String
     file_index::Int
     base_length::Int
-    sequence::Vector{UInt8}
-    binned_qualities::Union{Nothing,Vector{UInt8}}
+    packed_sequence::Vector{UInt8}
+    packed_qualities::Union{Nothing,Vector{UInt8}}
+    n_quality_bins::Int
     estimated_identity::Union{Nothing,Float64}
     k::UInt8
     l::UInt8
@@ -53,21 +56,42 @@ end
 
 _first_word(text::AbstractString) = (words = split(text); isempty(words) ? String(text) : String(first(words)))
 
-function _dna_sequence(sequence::AbstractVector{UInt8})
-    return map(sequence) do base
-        upper = UInt8(uppercase(Char(base)))
-        upper in (UInt8('A'), UInt8('C'), UInt8('G'), UInt8('T')) ? upper : UInt8('A')
+# 2-bit codes (A, C, G, T = 0–3; any other byte as A), four bases per byte, the
+# first base in the lowest bits.
+function _pack_bases(sequence::AbstractVector{UInt8})
+    packed = zeros(UInt8, cld(length(sequence), 4))
+    for (i, base) in enumerate(sequence)
+        upper = base & 0xdf
+        code = upper == UInt8('C') ? 0x01 : upper == UInt8('G') ? 0x02 : upper == UInt8('T') ? 0x03 : 0x00
+        packed[(i - 1) >> 2 + 1] |= code << (2 * ((i - 1) & 3))
     end
+    return packed
 end
+@inline _packed_code(packed::Vector{UInt8}, i::Integer) = @inbounds (packed[(i - 1) >> 2 + 1] >> (2 * ((i - 1) & 3))) & 0x03
+_unpack_bases(packed::Vector{UInt8}, n::Integer) = UInt8[b"ACGT"[_packed_code(packed, i) + 1] for i in 1:n]
 
-function _binned_qualities(qualities::AbstractVector{UInt8})
-    binned = UInt8[]
-    for start in 1:QUALITY_SEQ_BIN:length(qualities)
+# Upstream `QualCompact3` codes of the 4-base bins, two per byte.
+function _pack_qualities(qualities::AbstractVector{UInt8})
+    bins = cld(length(qualities), QUALITY_SEQ_BIN)
+    packed = zeros(UInt8, cld(bins, 2))
+    for b in 1:bins
+        start = (b - 1) * QUALITY_SEQ_BIN + 1
         lowest = minimum(@view qualities[start:min(start + QUALITY_SEQ_BIN - 1, end)])
-        push!(binned, UInt8(clamp((Int(lowest) - 32) ÷ 3, 0, 15)))
+        packed[(b - 1) >> 1 + 1] |= UInt8(clamp((Int(lowest) - 32) ÷ 3, 0, 15)) << (4 * ((b - 1) & 1))
     end
-    return binned
+    return packed, bins
 end
+_unpack_qualities(packed::Vector{UInt8}, bins::Integer) = UInt8[(packed[(b - 1) >> 1 + 1] >> (4 * ((b - 1) & 1))) & 0x0f for b in 1:bins]
+
+function Base.getproperty(read::TwinRead, name::Symbol)
+    name === :sequence && return _unpack_bases(getfield(read, :packed_sequence), getfield(read, :base_length))
+    if name === :binned_qualities
+        packed = getfield(read, :packed_qualities)
+        return packed === nothing ? nothing : _unpack_qualities(packed, getfield(read, :n_quality_bins))
+    end
+    return getfield(read, name)
+end
+Base.propertynames(::TwinRead) = (fieldnames(TwinRead)..., :sequence, :binned_qualities)
 
 """
     twin_read(sequence, qualities, id, config, snpmer_set, blockmer_set; file_index=1) -> Union{TwinRead,Nothing}
@@ -194,11 +218,13 @@ function twin_read(sequence::AbstractVector{UInt8}, qualities::Union{Nothing,Abs
 
     unique_context = [context_counts[kmer & split_mask] == 1 for kmer in snpmer_kmers]
     identity = qualities === nothing || equal_qualities ? nothing : estimate_sequence_identity(qualities)
-    return TwinRead(String(id), _first_word(id), file_index, n, _dna_sequence(sequence),
-                    qualities === nothing ? nothing : _binned_qualities(qualities), identity,
-                    UInt8(k), UInt8(l), minimizer_positions, minimizer_kmers,
+    packed_qualities, bins = qualities === nothing ? (nothing, 0) : _pack_qualities(qualities)
+    # Vectors filled with push! are copied to their exact length: the reads are
+    # kept for the whole run.
+    return TwinRead(String(id), _first_word(id), file_index, n, _pack_bases(sequence), packed_qualities, bins,
+                    identity, UInt8(k), UInt8(l), copy(minimizer_positions), copy(minimizer_kmers),
                     snpmer_positions[unique_context], snpmer_kmers[unique_context],
-                    blockmer_positions, blockmer_canonical, Union{Nothing,UInt64}[])
+                    copy(blockmer_positions), copy(blockmer_canonical), Union{Nothing,UInt64}[])
 end
 
 # rustc's FxHasher64 (fxhash 0.2.1) with one `write_u64` per word.
@@ -224,6 +250,26 @@ function lsh_signatures(kmers::AbstractVector{UInt64})
         signatures[table + 1] = signature
     end
     return signatures
+end
+
+# One record through the length filter, `twin_read` and the high-frequency and
+# repetitiveness filters (upstream `twin_reads_from_snpmers`); `nothing` if dropped.
+function _retained_twin_read(record::ReadRecord, config::SavontConfig, snpmer_set, blockmer_set, high_freq)
+    n = length(record.sequence)
+    (n < config.min_read_length || n > config.max_read_length) && return nothing
+    read = twin_read(record.sequence, record.qualities, record.header, config, snpmer_set, blockmer_set;
+                     file_index=record.sample_index)
+    read === nothing && return nothing
+    occurrences = Dict{UInt64,Int}()
+    for kmer in read.minimizer_kmers
+        occurrences[kmer] = get(occurrences, kmer, 0) + 1
+    end
+    solid = [occurrences[kmer] <= MAX_KMER_COUNT_IN_READ && !(kmer in high_freq) for kmer in read.minimizer_kmers]
+    count(solid) < n ÷ config.sampling_rate ÷ 20 && return nothing
+    read.minimizer_positions = read.minimizer_positions[solid]
+    read.snpmer_positions = read.snpmer_positions[[!(kmer in high_freq) for kmer in read.snpmer_kmers]]
+    read.lsh_signatures = lsh_signatures(read.minimizer_kmers)
+    return read
 end
 
 """
@@ -258,27 +304,21 @@ function build_twin_reads(paths::AbstractVector{<:AbstractString}, info::KmerGlo
     high_freq = info.high_freq_kmers
     reads = TwinRead[]
     seen = zeros(Int, length(paths)); length_removed = zeros(Int, length(paths))
-    foreach_record(paths; cutadapt_rc=false) do record
-        sample = record.sample_index
-        seen[sample] += 1
-        n = length(record.sequence)
-        if n < config.min_read_length || n > config.max_read_length
-            length_removed[sample] += 1
-            return
+    # Reads are built in parallel within each batch and kept in input order.
+    _foreach_batch(paths; cutadapt_rc=false) do batch
+        built = Vector{Union{Nothing,TwinRead}}(undef, length(batch))
+        Threads.@threads :dynamic for i in eachindex(batch)
+            built[i] = _retained_twin_read(batch[i], config, snpmer_set, blockmer_set, high_freq)
         end
-        read = twin_read(record.sequence, record.qualities, record.header, config, snpmer_set, blockmer_set;
-                         file_index=sample)
-        read === nothing && return
-        occurrences = Dict{UInt64,Int}()
-        for kmer in read.minimizer_kmers
-            occurrences[kmer] = get(occurrences, kmer, 0) + 1
+        for (record, read) in zip(batch, built)
+            seen[record.sample_index] += 1
+            n = length(record.sequence)
+            if n < config.min_read_length || n > config.max_read_length
+                length_removed[record.sample_index] += 1
+            elseif read !== nothing
+                push!(reads, read)
+            end
         end
-        solid = [occurrences[kmer] <= MAX_KMER_COUNT_IN_READ && !(kmer in high_freq) for kmer in read.minimizer_kmers]
-        count(solid) < n ÷ config.sampling_rate ÷ 20 && return
-        read.minimizer_positions = read.minimizer_positions[solid]
-        read.snpmer_positions = read.snpmer_positions[[!(kmer in high_freq) for kmer in read.snpmer_kmers]]
-        read.lsh_signatures = lsh_signatures(read.minimizer_kmers)
-        push!(reads, read)
     end
     for (sample, path) in enumerate(paths)
         if length_removed[sample] > seen[sample] ÷ 2
