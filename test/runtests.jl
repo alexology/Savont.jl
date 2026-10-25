@@ -384,6 +384,27 @@ end
     end
 end
 
+@testset "failing tasks (SV6), pooled export without table rows (D16)" begin
+    # Every task has finished when _tmap rethrows the first failure.
+    finished = Threads.Atomic{Bool}(false)
+    work(i) = i == 1 ? error("first task fails") : (sleep(0.5); finished[] = true)
+    @test_throws TaskFailedException Savont._tmap(work, 1:2)
+    @test finished[]
+    @test Savont._tmap(x -> 2x, 1:3) == [2, 4, 6]
+
+    mktempdir() do directory
+        run = mkpath(joinpath(directory, "pooled"))
+        sequence = String([b"ACGT"[(mm_hash64(UInt64(i)) & 3) + 1] for i in 1:300])
+        write(joinpath(run, "final_asvs.fasta"), ">final_asv_0_depth_3-7\n$sequence\n")
+        write(joinpath(run, "feature-table.tsv"), "#OTU ID\tS1\tS2\nfinal_asv_9_depth_1-1\t1\t1\n")
+        counts(; kwargs...) = only(values(savont_export([run], joinpath(directory, "out"); fuzzy=false, kwargs...).table))[2]
+        @test (@test_logs (:warn, r"1 ASVs .* not in its feature-table") counts()) == [3, 7]
+        @test Logging.with_logger(() -> counts(upstream_quirks=true), Logging.NullLogger()) == [10, 0]
+        write(joinpath(run, "final_asvs.fasta"), ">final_asv_0_depth_10\n$sequence\n")
+        @test_throws ArgumentError Logging.with_logger(() -> counts(), Logging.NullLogger())
+    end
+end
+
 @testset "command line" begin
     run_cli(args...) = (out = IOBuffer(); err = IOBuffer(); status = Savont.main(collect(String, args); output=out, err);
                         (status, String(take!(out)), String(take!(err))))

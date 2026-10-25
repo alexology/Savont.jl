@@ -2,6 +2,21 @@
 
 Native Julia reimplementation of [savont](https://github.com/bluenote-1577/savont), pinned to upstream 0.8.0 at commit `5a5a1ce9053a867abc09e991f61b8ec7fb4fc6ef`: amplicon sequence variants (ASVs) from long reads (ONT, PacBio HiFi). All five subcommands are implemented: the `savont asv` pipeline, taxonomic classification (`classify`, `sintax`), `export` and `download`; on the test data they give the same output files as the compiled upstream code.
 
+This package is part of an experimental effort to use AI to port
+bioinformatics and quantitative ecology packages to Julia, with the goal of
+creating a unified environment for high performance scientific computing.
+
+## Install from GitHub
+
+This package is not registered in the Julia General registry. Install it
+from GitHub together with its unregistered dependency:
+
+```julia
+using Pkg
+Pkg.add(url="https://github.com/alexology/Minimap2.jl")
+Pkg.add(url="https://github.com/alexology/Savont.jl")
+```
+
 ## Usage
 
 ```julia
@@ -37,7 +52,7 @@ Start Julia with threads (`julia -t auto`): read processing, marker clustering, 
 1. **Markers** (`discover_markers`): strand-separated split k-mer and blockmer counts and biallelic SNPmer/blockmer inference with upstream's binomial and Fisher tests (exact ports of statrs 0.16.1 and fishers_exact 1.0.1). Bloom prefiltering (`bloom_filter_size > 0`, off by default upstream) is not implemented.
 2. **Retained reads and primary clustering** (`build_twin_reads`, `cluster_reads_by_kmers`): length, identity and repetitiveness filters, open-syncmer minimizers, SNPmers, blockmers, MinHash LSH signatures; greedy k-mer clustering.
 3. **Polymorphic-marker clustering** (`cluster_reads_by_snpmers`) with iterative consensus reclustering.
-4. **Consensus and polishing**: per cluster, reads oriented with [Minimap2.jl](../Minimap2.jl) (native port of minimap2 2.30, configured as upstream's minimap2 crate) and combined by partial order alignment (`initial_consensus`; a port of spoars 0.1.3 with its banded SIMD kernels emulated lane by lane); pileups, per-quality error rates, posterior analysis, masking and low-quality consensuses (`polish_consensuses!`).
+4. **Consensus and polishing**: per cluster, reads oriented with [Minimap2.jl](https://github.com/alexology/Minimap2.jl) (native port of minimap2 2.30, configured as upstream's minimap2 crate) and combined by partial order alignment (`initial_consensus`; a port of spoars 0.1.3 with its banded SIMD kernels emulated lane by lane); pileups, per-quality error rates, posterior analysis, masking and low-quality consensuses (`polish_consensuses!`).
 5. **Merging** of similar consensuses (`merge_similar_consensuses`).
 6. **Chimera detection** (`detect_chimeras`, `filter_chimeras`).
 7. **Quantification** (`refine_depths!`): reads assigned to ASVs by SNPmers and alignment (or by minimap2 in low-polymorphism mode), EM over equivalence classes; per-sample depths with pooled samples (`per_sample_depths`).
