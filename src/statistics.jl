@@ -45,7 +45,14 @@ function _ulps_eq(a::Float64, b::Float64)
     return abs(ia - ib) <= 4
 end
 
-function _beta_reg(a::Float64, b::Float64, x::Float64)
+# statrs `beta_reg`: Lentz's continued fraction, which statrs stops after 140
+# iterations and returns unconverged (wrong, even above 1, for counts in the tens
+# of millions). With `converge`, the iterations continue until convergence
+# (deviation D21); results that converge within 140 iterations are unchanged.
+const _BETA_STATRS_ITERATIONS = 140
+const _BETA_MAX_ITERATIONS = 100_000_000
+
+function _beta_reg(a::Float64, b::Float64, x::Float64; converge::Bool=false)
     a > 0.0 || throw(ArgumentError("a must be positive"))
     b > 0.0 || throw(ArgumentError("b must be positive"))
     0.0 <= x <= 1.0 || throw(ArgumentError("x must be in [0, 1]"))
@@ -62,7 +69,7 @@ function _beta_reg(a::Float64, b::Float64, x::Float64)
     abs(d) < fpmin && (d = fpmin)
     d = 1.0 / d
     h = d
-    for mi in 1:140
+    for mi in 1:(converge ? _BETA_MAX_ITERATIONS : _BETA_STATRS_ITERATIONS)
         m = Float64(mi); m2 = m * 2.0
         aa = m * (b - m) * x / ((qam + m2) * (a + m2))
         d = 1.0 + aa * d
@@ -83,6 +90,7 @@ function _beta_reg(a::Float64, b::Float64, x::Float64)
             return symm_transform ? 1.0 - bt * h / a : bt * h / a
         end
     end
+    converge && error("regularized incomplete beta did not converge (a = $a, b = $b, x = $x)")
     return symm_transform ? 1.0 - bt * h / a : bt * h / a
 end
 
@@ -91,12 +99,14 @@ end
 
 Upper binomial tail used by upstream `utils::binomial_test`: `1 - P(X <= k)` for
 `X ~ Binomial(n, p)`, i.e. `P(X > k)` (the upstream comment says "k or more", but
-the computed quantity excludes `k`).
+the computed quantity excludes `k`). The incomplete beta function is iterated to
+convergence; `upstream_quirks=true` stops after 140 iterations as statrs, which
+is wrong for counts in the tens of millions (deviation D21).
 """
-function binomial_test(n::Integer, k::Integer, p::Real)
+function binomial_test(n::Integer, k::Integer, p::Real; upstream_quirks::Bool=false)
     n >= 0 && k >= 0 || throw(ArgumentError("n and k must be nonnegative"))
     0 <= p <= 1 || throw(ArgumentError("p must be in [0, 1]"))
-    cdf = k >= n ? 1.0 : _beta_reg(Float64(n - k), Float64(k) + 1.0, 1.0 - Float64(p))
+    cdf = k >= n ? 1.0 : _beta_reg(Float64(n - k), Float64(k) + 1.0, 1.0 - Float64(p); converge=!upstream_quirks)
     return 1.0 - cdf
 end
 

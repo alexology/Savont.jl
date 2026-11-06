@@ -101,7 +101,26 @@ end
 # Upstream `read_feature_table_for_classify`: sample names, per-ASV depths
 # from feature-table.tsv, matched by the first header word (zeros for ASVs missing
 # from the table), and the number of missing ASVs; `nothing` without a usable table.
-function _read_feature_table(path, headers)
+function _read_feature_table(path, headers; upstream_quirks::Bool=false)
+    parsed = _parse_feature_table(path; upstream_quirks)
+    parsed === nothing && return nothing
+    names, depths = parsed
+    missing = count(h -> !haskey(depths, _header_token(h)), headers)
+    return names, [get(() -> zeros(Int, length(names)), depths, _header_token(h)) for h in headers], missing
+end
+
+# Rust `str::parse::<usize>`: digits with an optional `+`, nothing else.
+_parse_unsigned(text) = occursin(r"^\+?[0-9]+$", text) ? tryparse(Int, text) : nothing
+
+# A feature-table.tsv (`#OTU ID` header, one count column per sample): the sample
+# names and the counts by OTU id, or `nothing` without a file, header line or
+# sample. Upstream reads an unparsable or missing cell as 0, which makes unread
+# data look like an absent ASV; here it is an `ArgumentError` naming the file,
+# line and sample (deviation D17), and `upstream_quirks=true` keeps the zero.
+# Upstream also lets a repeated OTU id silently replace the earlier row; here that
+# is an `ArgumentError` naming both lines (deviation D22), and `upstream_quirks=true`
+# keeps the last row.
+function _parse_feature_table(path; upstream_quirks::Bool=false)
     isfile(path) || return nothing
     lines = readlines(path)
     start = findfirst(l -> startswith(l, "#OTU ID"), lines)
@@ -109,18 +128,31 @@ function _read_feature_table(path, headers)
     names = String.(split(lines[start], '\t')[2:end])
     isempty(names) && return nothing
     depths = Dict{String,Vector{Int}}()
-    for line in lines[(start + 1):end]
+    seen = Dict{String,Int}()               # OTU id => line number
+    for number in (start + 1):length(lines)
+        line = lines[number]
         (isempty(line) || startswith(line, '#')) && continue
         fields = split(line, '\t')
-        depths[String(fields[1])] = [i + 1 <= length(fields) ? something(_parse_unsigned(fields[i + 1]), 0) : 0
-                                     for i in eachindex(names)]
+        counts = zeros(Int, length(names))
+        for (i, name) in enumerate(names)
+            value = i + 1 <= length(fields) ? _parse_unsigned(fields[i + 1]) : nothing
+            if value === nothing && !upstream_quirks
+                cell = i + 1 <= length(fields) ? repr(String(fields[i + 1])) : "missing"
+                throw(ArgumentError("$path, line $number: count of sample $(repr(name)) for $(repr(String(fields[1]))) " *
+                                    "is not a non-negative integer ($cell)"))
+            end
+            counts[i] = something(value, 0)
+        end
+        id = String(fields[1])
+        if !upstream_quirks && haskey(seen, id)
+            throw(ArgumentError("$path, lines $(seen[id]) and $number: OTU id $(repr(id)) is repeated; " *
+                                "the table is ambiguous (merge the rows explicitly if they are the same ASV)"))
+        end
+        seen[id] = number
+        depths[id] = counts
     end
-    missing = count(h -> !haskey(depths, _header_token(h)), headers)
-    return names, [get(() -> zeros(Int, length(names)), depths, _header_token(h)) for h in headers], missing
+    return names, depths
 end
-
-# Rust `str::parse::<usize>`: digits with an optional `+`, nothing else.
-_parse_unsigned(text) = occursin(r"^\+?[0-9]+$", text) ? tryparse(Int, text) : nothing
 
 """
     savont_classify(input_dir, db; output_dir=input_dir, species_threshold=99.0,
@@ -131,7 +163,9 @@ database (a directory or a [`TaxonomyDatabase`](@ref)) with minimap2 (`map-ont`)
 keep for each ASV the alignments with the NM of its primary alignment, resolve
 multi-mapped ASVs by EM over taxa ([`taxon_em`](@ref)) and cut each lineage at
 the rank its identity reaches ([`assign_taxonomy`](@ref)). Depths come from
-`feature-table.tsv` when present, else from the FASTA headers.
+`feature-table.tsv` when present, else from the FASTA headers; a count that is
+not a non-negative integer, or a repeated OTU id, is an `ArgumentError`
+(upstream reads the count as 0 and keeps the last row; deviations D17, D22).
 
 Writes `species_abundance.tsv`, `genus_abundance.tsv` (one column per sample with
 several samples) and `asv_mappings.tsv` (every best alignment, ASVs in input
@@ -155,7 +189,7 @@ function savont_classify(input_dir::AbstractString, db::TaxonomyDatabase; output
     records = read_fasta_records(fasta)
     isempty(records) && @warn "No consensus sequences in $fasta"
     headers = first.(records)
-    table = _read_feature_table(joinpath(input_dir, "feature-table.tsv"), headers)
+    table = _read_feature_table(joinpath(input_dir, "feature-table.tsv"), headers; upstream_quirks)
     sample_names, per_sample, missing = table === nothing ? (["sample"], [[_header_depth(h)] for h in headers], 0) : table
     missing > 0 && @warn "$missing of $(length(headers)) ASVs of $fasta are not in feature-table.tsv; their depth is taken as 0"
     depths = [foldl(+, s; init=0) for s in per_sample]

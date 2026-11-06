@@ -18,24 +18,10 @@ the sequence and of its reverse complement, as 16 hexadecimal digits.
 """
 sequence_hash(sequence::AbstractVector{UInt8}) = string(min(_djb2(sequence), _djb2(reverse_complement(sequence))); base=16, pad=16)
 
-# Feature table of a run directory: sample names and per-sample depths by OTU id.
-function _export_feature_table(directory)
-    path = joinpath(directory, "feature-table.tsv")
-    isfile(path) || return nothing
-    lines = readlines(path)
-    start = findfirst(l -> startswith(l, "#OTU ID"), lines)
-    start === nothing && return nothing
-    names = String.(split(lines[start], '\t')[2:end])
-    isempty(names) && return nothing
-    depths = Dict{String,Vector{Int}}()
-    for line in lines[(start + 1):end]
-        (isempty(line) || startswith(line, '#')) && continue
-        fields = split(line, '\t')
-        depths[String(fields[1])] = [k + 1 <= length(fields) ? something(_parse_unsigned(fields[k + 1]), 0) : 0
-                                     for k in eachindex(names)]
-    end
-    return names, depths
-end
+# Feature table of a run directory: sample names and per-sample depths by OTU id
+# (`_parse_feature_table`; deviation D17 for unreadable counts).
+_export_feature_table(directory; upstream_quirks::Bool=false) =
+    _parse_feature_table(joinpath(directory, "feature-table.tsv"); upstream_quirks)
 
 # `(header word, lineage)` of every row of asv_mappings.tsv (classify or sintax),
 # the lineage joining the available ranks from superkingdom to species with `;`.
@@ -137,12 +123,18 @@ replaces the sample names.
 Writes `merged_feature_table.tsv`, `merged_rep_seqs.fasta`,
 `merged_asv_taxonomy.tsv` and, when there is any ASV, `merged_taxon_counts.tsv`
 (counts summed by lineage; an older one is removed otherwise). Returns `(table, lineages, sample_names)`.
+
+A run whose `final_asvs.fasta` cannot be read, or whose feature table holds a
+count that is not a non-negative integer or a repeated OTU id, is an
+`ArgumentError` before any output is written; upstream exports such samples as
+zeros and keeps the last of repeated rows (deviations D17, D18, D22, reproduced
+with `upstream_quirks=true`).
 """
 function savont_export(input_dirs::AbstractVector{<:AbstractString}, output_dir::AbstractString;
                        fuzzy::Bool=true, relabel::Union{Nothing,AbstractVector{<:AbstractString}}=nothing,
                        upstream_quirks::Bool=false)
     mkpath(output_dir)
-    tables = [_export_feature_table(d) for d in input_dirs]
+    tables = [_export_feature_table(d; upstream_quirks) for d in input_dirs]
     sample_names = String[]; offsets = Int[]; widths = Int[]
     for (directory, ft) in zip(input_dirs, tables)
         push!(offsets, length(sample_names))
@@ -158,6 +150,10 @@ function savont_export(input_dirs::AbstractVector{<:AbstractString}, output_dir:
         records = try
             read_fasta_records(fasta)
         catch err
+            # Upstream logs the error and exports the run's columns as zeros, which
+            # cannot be told from a negative sample (deviation D18).
+            upstream_quirks || throw(ArgumentError("cannot read the ASVs of run $(repr(directory)) ($fasta): " *
+                                                   sprint(showerror, err)))
             @error "Could not read $fasta: $err"
             continue
         end

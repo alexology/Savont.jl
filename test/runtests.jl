@@ -81,6 +81,11 @@ end
     # Values from R: 1 - pbinom(k, n, p) and fisher.test(matrix(...))$p.value.
     @test binomial_test(10, 2, 0.025) ≈ 0.00164317002288 rtol = 1e-10
     @test binomial_test(5, 5, 0.05) == 0.0
+    # D21 (SV17): extreme counts, against R `pbinom(k, n, p, lower.tail = FALSE)`.
+    @test binomial_test(1_000_000_000, 25_000_000, 0.025) ≈ 0.499946803434366 rtol = 1e-5
+    @test binomial_test(100_000_000, 5_000_000, 0.05) ≈ 0.499881 rtol = 1e-5
+    @test binomial_test(1_000_000_000, 25_000_000, 0.025; upstream_quirks=true) == 1.1876349336853742   # statrs
+    @test binomial_test(100_000, 2_500, 0.025) == binomial_test(100_000, 2_500, 0.025; upstream_quirks=true)
     @test fishers_exact((1, 9, 11, 3)) ≈ 0.00275945618522 rtol = 1e-10
     @test fishers_exact((3, 1, 1, 3)) ≈ 0.4857142857 rtol = 1e-9
     @test fishers_exact((0, 0, 4, 5)) == 1.0
@@ -446,6 +451,20 @@ end
     end
 end
 
+# Windows only: run `f` while `path` (a file or a directory) is open without
+# FILE_SHARE_DELETE, as another program may hold it, so that it cannot be renamed.
+function with_locked_path(f, path)
+    handle = ccall((:CreateFileW, "kernel32"), stdcall, Ptr{Cvoid},
+                   (Cwstring, UInt32, UInt32, Ptr{Cvoid}, UInt32, UInt32, Ptr{Cvoid}),
+                   path, 0x80000000, 0x00000003, C_NULL, 3, 0x02000000, C_NULL)   # GENERIC_READ, share read/write, OPEN_EXISTING, BACKUP_SEMANTICS
+    handle == Ptr{Cvoid}(-1 % UInt) && error("CreateFileW failed for $path")
+    try
+        return f()
+    finally
+        ccall((:CloseHandle, "kernel32"), stdcall, Int32, (Ptr{Cvoid},), handle)
+    end
+end
+
 @testset "database download (local archives)" begin
     mktempdir() do directory
         source = mkpath(joinpath(directory, "source"))
@@ -495,7 +514,119 @@ end
         unite_names = first.(read_fasta_records(joinpath(location, "unite-10.0", "unite_sequences.fasta")))
         @test all(n -> startswith(n, "SH"), unite_names) && any(n -> length(n) == 255, unite_names)
         @test_throws ArgumentError download_database(location, "emu-2")
+
+        # D20 (SV12): a download that fails halfway leaves the previous database whole.
+        silva = joinpath(location, "silva-138.2")
+        before = Dict(f => read(joinpath(silva, f)) for f in readdir(silva))
+        new_fasta = joinpath(source, "new.fasta"); write(new_fasta, ">NEW1\nACGTACGTAC\n")
+        broken = Dict("silva-138.2" => [url(gzip(new_fasta)), url(joinpath(source, "missing.txt.gz"))])
+        @test_throws Exception quiet(() -> download_database(location, "silva-138.2"; urls=broken))
+        @test Dict(f => read(joinpath(silva, f)) for f in readdir(silva)) == before
+        @test sort(readdir(location)) == ["emu-1", "greengenes2-2024.09", "silva-138.2", "unite-10.0"]   # no staging left
+        @test quiet(() -> load_database(silva)).taxonomy == quiet(() -> load_database(joinpath(TAXONOMY_DATA, "silva-138.2"))).taxonomy
+        # D20 (SV13): a complete download with invalid content (an HTML page) does not replace it either.
+        html = joinpath(source, "page.fasta"); write(html, "<!DOCTYPE html>\n<html><body>Not found</body></html>\n")
+        invalid = Dict("silva-138.2" => [url(gzip(html)), url(silva_files[2])])
+        @test_throws ArgumentError quiet(() -> download_database(location, "silva-138.2"; urls=invalid))
+        @test Dict(f => read(joinpath(silva, f)) for f in readdir(silva)) == before
+        @test sort(readdir(location)) == ["emu-1", "greengenes2-2024.09", "silva-138.2", "unite-10.0"]
+        if Sys.iswindows()
+            # SV16: the previous directory cannot be moved aside (open in another program):
+            # nothing is copied or deleted, the download fails and the database is intact.
+            @test_throws Base.IOError with_locked_path(() -> quiet(() -> download_database(location, "silva-138.2"; urls)), silva)
+            @test Dict(f => read(joinpath(silva, f)) for f in readdir(silva)) == before
+            @test sort(readdir(location)) == ["emu-1", "greengenes2-2024.09", "silva-138.2", "unite-10.0"]
+        end
     end
+end
+
+@testset "input validation (D17, D18, D19, D22, SV10)" begin
+    quiet(f) = Logging.with_logger(f, Logging.NullLogger())
+    mktempdir() do directory
+        sequence(seed) = String([b"ACGT"[(mm_hash64(UInt64(i + seed)) & 3) + 1] for i in 1:300])
+        first_run = mkpath(joinpath(directory, "run1")); second_run = mkpath(joinpath(directory, "run2"))
+        write(joinpath(first_run, "final_asvs.fasta"), ">final_asv_0_depth_7\n$(sequence(0))\n")
+        write(joinpath(first_run, "feature-table.tsv"), "#OTU ID\tS1\nfinal_asv_0_depth_7\t7\n")
+        write(joinpath(second_run, "feature-table.tsv"), "#OTU ID\tS2\nfinal_asv_0_depth_5\t5\n")
+        output = joinpath(directory, "out")
+        # D18 (SV8): a run without readable ASVs is an error, before any output is written.
+        @test_throws ArgumentError quiet(() -> savont_export([first_run, second_run], output; fuzzy=false))
+        @test !isdir(output) || isempty(readdir(output))
+        counts = quiet(() -> savont_export([first_run, second_run], output; fuzzy=false, upstream_quirks=true)).table
+        @test only(values(counts))[2] == [7, 0]   # upstream
+        @test quiet(() -> Savont.main(["export", "-i", first_run, second_run, "-o", joinpath(directory, "cli")];
+                                      output=IOBuffer(), err=IOBuffer())) == 1
+        # D17 (SV9): counts that are not non-negative integers are errors, not zeros.
+        write(joinpath(second_run, "final_asvs.fasta"), ">final_asv_0_depth_5\n$(sequence(1000))\n")
+        for cell in ("5.0", "five", "-5", "")
+            write(joinpath(second_run, "feature-table.tsv"), "#OTU ID\tS2\nfinal_asv_0_depth_5\t$cell\n")
+            @test_throws ArgumentError quiet(() -> savont_export([first_run, second_run], output; fuzzy=false))
+            @test_throws ArgumentError Savont._parse_feature_table(joinpath(second_run, "feature-table.tsv"))
+            @test Savont._parse_feature_table(joinpath(second_run, "feature-table.tsv"); upstream_quirks=true)[2] ==
+                  Dict("final_asv_0_depth_5" => [0])
+        end
+        write(joinpath(second_run, "feature-table.tsv"), "#OTU ID\tS2\tS3\nfinal_asv_0_depth_5\t5\n")   # missing cell
+        @test_throws ArgumentError Savont._parse_feature_table(joinpath(second_run, "feature-table.tsv"))
+        write(joinpath(second_run, "feature-table.tsv"), "#OTU ID\tS2\nfinal_asv_0_depth_5\t+5\n")
+        @test sort([c[2] for c in values(quiet(() -> savont_export([first_run, second_run], output; fuzzy=false)).table)]) ==
+              [[0, 5], [7, 0]]
+        # D22 (SV18): a repeated OTU id is an error naming both lines, before any output.
+        mktempdir() do run
+            write(joinpath(run, "final_asvs.fasta"), ">final_asv_0_depth_12\n$(sequence(2000))\n")
+            table = joinpath(run, "feature-table.tsv")
+            for rows in (("7", "5"), ("5", "7"))
+                write(table, "#OTU ID\tS1\nfinal_asv_0_depth_12\t$(rows[1])\nfinal_asv_0_depth_12\t$(rows[2])\n")
+                error = try Savont._parse_feature_table(table); nothing catch err; err end
+                @test error isa ArgumentError && occursin("lines 2 and 3", error.msg)
+                @test Savont._parse_feature_table(table; upstream_quirks=true)[2] ==
+                      Dict("final_asv_0_depth_12" => [parse(Int, rows[2])])   # upstream: the last row
+                exported = joinpath(run, "out")
+                @test_throws ArgumentError quiet(() -> savont_export([run], exported; fuzzy=false))
+                @test !isdir(exported) || isempty(readdir(exported))
+                @test quiet(() -> Savont.main(["export", "-i", run, "-o", joinpath(run, "cli")];
+                                              output=IOBuffer(), err=IOBuffer())) == 1
+                @test_throws ArgumentError Savont._read_feature_table(table, ["final_asv_0_depth_12"])
+            end
+            write(table, "#OTU ID\tS1\nfinal_asv_0_depth_12\t12\n")
+            @test only(values(quiet(() -> savont_export([run], joinpath(run, "out"); fuzzy=false)).table))[2] == [12]
+        end
+
+        # D19 (SV11): preparing UNITE never truncates its source or earlier outputs.
+        unite = mkpath(joinpath(directory, "unite"))
+        aliased = joinpath(unite, "unite_sequences.fasta")
+        write(aliased, ">Name|ACC1|SH1.10FU|refs|k__Fungi;s__X\nACGT\n")
+        preprocess_unite(aliased, unite)
+        @test read(aliased, String) == ">SH1.10FU\nACGT\n"
+        @test readlines(joinpath(unite, "unite_taxonomy.tsv")) == ["sh_id\ttaxonomy", "SH1.10FU\tk__Fungi;s__X"]
+        previous = Dict(f => read(joinpath(unite, f)) for f in readdir(unite))
+        @test_throws ArgumentError preprocess_unite(joinpath(unite, "missing.fasta"), unite)
+        @test Dict(f => read(joinpath(unite, f)) for f in readdir(unite)) == previous
+        # SV15: an output path that is a directory is refused, not deleted.
+        blocked = mkpath(joinpath(directory, "blocked"))
+        mkpath(joinpath(blocked, "unite_sequences.fasta")); write(joinpath(blocked, "unite_sequences.fasta", "unrelated.txt"), "keep")
+        @test_throws ArgumentError preprocess_unite(joinpath(unite, "unite_sequences.fasta"), blocked)
+        @test read(joinpath(blocked, "unite_sequences.fasta", "unrelated.txt"), String) == "keep"
+        @test sort(readdir(blocked)) == ["unite_sequences.fasta"]   # no temporary left
+        # SV14: if publishing the second file fails, both previous files are restored.
+        new_fasta = joinpath(unite, "new_fasta.tmp"); write(new_fasta, ">SH2\nTTTT\n")
+        targets = joinpath.(unite, ["unite_sequences.fasta", "unite_taxonomy.tsv"])
+        @test_throws Exception Savont._publish_files([new_fasta, joinpath(unite, "missing.tmp")], targets)
+        @test Dict(f => read(joinpath(unite, f)) for f in readdir(unite) if f != "new_fasta.tmp") == previous
+        if Sys.iswindows()
+            # SV14 with a real lock on the taxonomy: the pair is kept and no backup copy is left.
+            new_taxonomy = joinpath(unite, "new_taxonomy.tmp"); write(new_taxonomy, "sh_id\ttaxonomy\nSH2\tk__Fungi\n")
+            @test_throws Base.IOError with_locked_path(() -> Savont._publish_files([new_fasta, new_taxonomy], targets), targets[2])
+            @test Dict(f => read(joinpath(unite, f)) for f in readdir(unite) if !endswith(f, ".tmp")) == previous
+            @test !any(f -> occursin(".previous-", f), readdir(unite))
+        end
+    end
+    # SV10: qualities outside 0..=255 are refused, as clap does for a u8.
+    for quality in ("256", "300")
+        options = Savont.parse_command_line(["asv", "r.fq", "--minimum-base-quality=$quality"])[2]
+        @test_throws Savont.CLIError Savont._asv_config(options)
+    end
+    options = Savont.parse_command_line(["asv", "r.fq", "--minimum-base-quality", "255"])[2]
+    @test Savont._asv_config(options).minimum_base_quality == 0xff
 end
 
 include("rust_oracle.jl")

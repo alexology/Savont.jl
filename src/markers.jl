@@ -142,11 +142,11 @@ count_split_kmers(path::AbstractString, config::SavontConfig) = count_split_kmer
 
 # Upstream sorts each group by decreasing total count, ties by k-mer, and keeps the
 # top two alleles. Returns `nothing` when the pair is rejected.
-function _biallelic_test(group::Vector{KmerCount}, binomial_short::Bool, single_strand::Bool)
+function _biallelic_test(group::Vector{KmerCount}, binomial_short::Bool, single_strand::Bool; upstream_quirks::Bool=false)
     sort!(group; by=x -> (-Int64(_total(x)), x[1]))
     n = _total(group[1]); succ = _total(group[2])
-    binomial_test(n, succ, 0.025) > 0.05 && return nothing
-    binomial_short && binomial_test(n, succ, 0.050) > 0.05 && return nothing
+    binomial_test(n, succ, 0.025; upstream_quirks) > 0.05 && return nothing
+    binomial_short && binomial_test(n, succ, 0.050; upstream_quirks) > 0.05 && return nothing
     a = group[1][2][1]; b = group[2][2][1]; c = group[1][2][2]; d = group[2][2][2]
     table = (max(a, c), max(b, d), min(c, a), min(d, b))
     p_value = fishers_exact(table)
@@ -196,7 +196,7 @@ function find_snpmers(kmer_counts::AbstractVector{KmerCount}, config::SavontConf
     include = config.single_strand ? (_ -> true) : (x -> x[2][1] != 0 && x[2][2] != 0)
     snpmers = SnpmerInfo[]
     _each_group(sorted, x -> retrieve_masked_kmer(x, k), include) do group
-        result = _biallelic_test(group, k < 5, config.single_strand)
+        result = _biallelic_test(group, k < 5, config.single_strand; upstream_quirks=config.upstream_quirks)
         result === nothing && return
         mid_bases = (UInt8(split_kmer(group[1][1], k)[2]), UInt8(split_kmer(group[2][1], k)[2]))
         push!(snpmers, SnpmerInfo(retrieve_masked_kmer(group[1][1], k), mid_bases, result, UInt8(k)))
@@ -227,7 +227,7 @@ function find_blockmers(blockmer_counts::AbstractVector{KmerCount}, snpmer_count
     end
     blockmers = BlockmerInfo[]
     _each_group(sorted, x -> x >> (2l), include) do group
-        result = _biallelic_test(group, l < 5, single_strand)
+        result = _biallelic_test(group, l < 5, single_strand; upstream_quirks=config.upstream_quirks)
         result === nothing && return
         pair = (Blockmer(group[1][1], true), Blockmer(group[2][1], true))
         push!(blockmers, BlockmerInfo(group[1][1] >> (2l), pair, result, UInt8(k), UInt8(l)))

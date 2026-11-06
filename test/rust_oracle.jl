@@ -215,7 +215,7 @@ function compare_stats(text)
     for fields in oracle_rows(text)
         if fields[1] == "binomial"
             n, k = parse.(Int, fields[2:3])
-            @test binomial_test(n, k, parse(Float64, fields[4])) ≈ parse(Float64, fields[5]) rtol = 1e-12 atol = 1e-300
+            @test binomial_test(n, k, parse(Float64, fields[4]); upstream_quirks=true) ≈ parse(Float64, fields[5]) rtol = 1e-12 atol = 1e-300
             binomial_cases += 1
         else
             table = parse.(Int, fields[2:5])

@@ -346,6 +346,122 @@ that does not give them is an error. Runs without a feature table, and
 single-sample tables, are unchanged. `upstream_quirks=true` falls back as
 upstream (the warning is still given).
 
+## D17. Unreadable feature-table counts become zeros (2026-11-05)
+
+**Upstream behavior.** The feature-table readers of `classify` and `export`
+(`merge.rs:73–78` and the classify equivalent) parse each count as `usize` and
+use 0 when parsing fails or the cell is missing.
+
+**Consequence.** A count written as `5.0`, a typo or a truncated row silently
+becomes 0: with two ASVs counted `7` and `5.0`, export keeps 7 reads and classify
+reads `[[7], [0]]`, with no message (review SV9, reproduced with the oracle). The
+check of D15 does not catch it while another count is positive.
+
+**Savont.jl.** A count that is not a non-negative integer (Rust's `usize`
+syntax: digits with an optional `+`) or a missing cell is an `ArgumentError`
+naming the file, line, sample and OTU. `upstream_quirks=true` reads it as 0.
+
+## D18. An unreadable run is exported as a negative sample (2026-11-05)
+
+**Upstream behavior.** `merge.rs::export` logs an error when a run's
+`final_asvs.fasta` cannot be read and continues (`merge.rs:467–470`): the run's
+sample columns stay in the tables, all zero, and the command succeeds.
+
+**Consequence.** A sample that was not analysed cannot be told from one without
+reads (review SV8, reproduced with the oracle: `[7, 0]` for two runs, the second
+without its FASTA).
+
+**Savont.jl.** `savont_export` throws an `ArgumentError` naming the run before
+writing any output (the CLI exits with status 1). `upstream_quirks=true` logs and
+continues as upstream.
+
+## D19. Preparing UNITE can truncate its own source (2026-11-05)
+
+**Upstream behavior.** `databases.rs` opens the source FASTA, then creates
+`unite_sequences.fasta` and `unite_taxonomy.tsv`; when the source is one of these
+files it is truncated before being read. The downloader avoids that name when it
+picks the source, so this concerns direct calls. (Savont.jl also opened the
+outputs before checking the source, so a missing source emptied earlier
+outputs: review SV11.)
+
+**Savont.jl.** `preprocess_unite` checks the source and the output paths (an
+output path that exists and is not a regular file, such as a directory, is an
+error, where Rust's `File::create` also fails; reviews SV11, SV15), writes both
+outputs to temporary files and publishes them together after reading the whole
+source: the previous files are moved aside and restored if either move fails,
+so the FASTA and the taxonomy never come from different preparations (review
+SV14). On error the existing files are untouched, unless even the restore fails,
+in which case the error names the backups kept. The two renames are not atomic
+for a reader running at the same time. Not compared with the Rust preprocessor,
+which the oracle does not expose; no `upstream_quirks` mode, since the result of
+a successful preparation is the same.
+
+## D20. A failed download leaves a mixed database (2026-11-05)
+
+**Upstream behavior.** `download.rs` writes each file of a database into its
+final directory as it is downloaded.
+
+**Consequence.** If a later file fails, the directory mixes new and old files:
+for SILVA, a new FASTA with the previous taxonomy map and marker, which loads
+without error but lacks the taxonomy of the new references (review SV12,
+reproduced with local URLs; not compared live with upstream's `wget` calls).
+
+**Savont.jl.** `download_database` prepares each database in a staging directory
+next to its destination and replaces the previous directory only when complete
+and loadable (restoring it if the replacement fails); on error the previous
+database is unchanged and the staging directory is removed. The content check is
+minimal: the database loads, its taxonomy is not empty, the first FASTA record
+parses with a sequence and has a taxonomy entry, which rejects for example an
+HTML error page delivered in place of a file (review SV13); it does not read the
+whole FASTA. Files kept in a database
+directory by earlier runs, such as an index cached as `<fasta>.mmi`, are not
+carried over. No `upstream_quirks` mode (download is not part of the oracle).
+
+Both D19 and D20 move files and directories with plain renames in the same
+parent directory, never with `Base.mv`: when a rename fails (for instance on
+Windows, a directory or file open in another program without delete sharing),
+`mv` falls back to copying and then deleting the source, which emptied the
+previous database directory before failing (review SV16). A failed rename
+changes nothing, so the previous database or UNITE files stay in place.
+
+## D21. The binomial test is wrong at counts in the tens of millions (2026-11-06)
+
+**Upstream behavior.** Marker discovery tests each SNPmer pair with
+`statrs::Binomial::sf` (statrs 0.16.1), whose regularized incomplete beta function
+stops Lentz's continued fraction after 140 iterations and returns the value
+reached even when it has not converged.
+
+**Consequence.** For large counts the upper tail is wrong, even outside [0, 1]:
+`binomial_test(10^9, 25 × 10^6, 0.025)` gives 1.1876 instead of 0.49995 (R
+`pbinom`, SciPy `binom.sf`), and `n = 10^8` gives 0.655 instead of 0.4999 (review
+SV17; the same values with the native statrs). Results are bit-identical up to
+`n = 10^5`, differ around 10^-12 at `10^6` and by about 10^-4 at `10^7`; a pair's
+`n` is the count of its most frequent k-mer, at most of the order of the number of
+reads, so no decision at the 0.05 threshold changes on data of realistic size.
+
+**Savont.jl.** The continued fraction is iterated to convergence (an error if it
+does not converge within 10^8 iterations); within 2 × 10^-6 of R and SciPy even at
+`n = 10^9`, the residual coming from `log Γ` of very large arguments.
+`binomial_test(...; upstream_quirks=true)` and `SavontConfig(upstream_quirks=true)`
+stop after 140 iterations as statrs.
+
+## D22. A repeated OTU id in a feature table replaces the earlier row (2026-11-06)
+
+**Upstream behavior.** `classify` and `export` read `feature-table.tsv` into a
+hash map keyed by the OTU id (`classify.rs:261`, `merge.rs:77`); a second row with
+the same id overwrites the first without a message.
+
+**Consequence.** A table with the id twice (after concatenating or editing
+tables, for example) is ambiguous, and the result depends on the row order: with
+counts 7 and 5 the ASV gets 5, with 5 and 7 it gets 7 (review SV18; identical
+with the native upstream export). Tables written by `savont asv` have unique ids
+and are not affected.
+
+**Savont.jl.** A repeated id is an `ArgumentError` naming the file, both lines and
+the id, raised before any output is written; the rows are not summed, since they
+may not be the same ASV, so merging them is left to the user.
+`upstream_quirks=true` keeps the last row, as upstream.
+
 ## Upstream behavior kept on purpose
 
 - **Reads without SNPmers inside polymorphic primary clusters** are still

@@ -190,9 +190,13 @@ end
 # SavontConfig of `savont asv` options; presets are applied after the options,
 # as upstream (`--rrna-operon` overrides -m/-M).
 function _asv_config(values)
+    # A u8 upstream: clap rejects values outside 0..=255.
+    quality = values["minimum-base-quality"]
+    0 <= quality <= 255 ||
+        throw(CLIError("invalid value '$quality' for '--minimum-base-quality <MINIMUM_BASE_QUALITY>': $quality is not in 0..=255"))
     config = SavontConfig(; min_read_length=values["min-read-length"], max_read_length=values["max-read-length"],
                           quality_value_cutoff=values["quality-value-cutoff"],
-                          minimum_base_quality=UInt8(clamp(values["minimum-base-quality"], 0, 255)),
+                          minimum_base_quality=UInt8(quality),
                           single_strand=values["single-strand"], min_cluster_size=values["min-cluster-size"],
                           bloom_filter_size=values["bloom-filter-size"], n_depth_cutoff=values["n-depth-cutoff"],
                           use_hpc=values["use-hpc"], mask_low_quality=values["mask-low-quality"],
